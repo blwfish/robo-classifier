@@ -46,86 +46,86 @@ def prepare_dataset(data_dir, output_dir, test_size=0.2, random_seed=42):
     output_dir = Path(output_dir)
     
     # Create output directories
-    train_interesting = output_dir / "train" / "interesting"
-    train_boring = output_dir / "train" / "boring"
-    test_interesting = output_dir / "test" / "interesting"
-    test_boring = output_dir / "test" / "boring"
-    
-    for d in [train_interesting, train_boring, test_interesting, test_boring]:
+    train_select = output_dir / "train" / "select"
+    train_reject = output_dir / "train" / "reject"
+    test_select = output_dir / "test" / "select"
+    test_reject = output_dir / "test" / "reject"
+
+    for d in [train_select, train_reject, test_select, test_reject]:
         d.mkdir(parents=True, exist_ok=True)
-    
+
     # Collect all images from each class
-    interesting_dir = data_dir / "interesting"
-    boring_dir = data_dir / "boring"
+    select_dir = data_dir / "select"
+    reject_dir = data_dir / "reject"
+
+    select_images = list(select_dir.glob("*.jpg")) + list(select_dir.glob("*.JPG"))
+    reject_images = list(reject_dir.glob("*.jpg")) + list(reject_dir.glob("*.JPG"))
     
-    interesting_images = list(interesting_dir.glob("*.jpg")) + list(interesting_dir.glob("*.JPG"))
-    boring_images = list(boring_dir.glob("*.jpg")) + list(boring_dir.glob("*.JPG"))
-    
-    print(f"Found {len(interesting_images)} interesting images")
-    print(f"Found {len(boring_images)} boring images")
-    
+    print(f"Found {len(select_images)} select images")
+    print(f"Found {len(reject_images)} reject images")
+
     # Split each class
-    interesting_train, interesting_test = train_test_split(
-        interesting_images, 
-        test_size=test_size, 
-        random_state=random_seed
-    )
-    
-    boring_train, boring_test = train_test_split(
-        boring_images,
+    select_train, select_test = train_test_split(
+        select_images,
         test_size=test_size,
         random_state=random_seed
     )
-    
-    print(f"\nTrain set: {len(interesting_train)} interesting, {len(boring_train)} boring")
-    print(f"Test set: {len(interesting_test)} boring, {len(boring_test)} boring")
-    
+
+    reject_train, reject_test = train_test_split(
+        reject_images,
+        test_size=test_size,
+        random_state=random_seed
+    )
+
+    print(f"\nTrain set: {len(select_train)} select, {len(reject_train)} reject")
+    print(f"Test set: {len(select_test)} select, {len(reject_test)} reject")
+
     # Copy files
-    for img in interesting_train:
-        shutil.copy(img, train_interesting / img.name)
-    
-    for img in interesting_test:
-        shutil.copy(img, test_interesting / img.name)
-    
-    for img in boring_train:
-        shutil.copy(img, train_boring / img.name)
-    
-    for img in boring_test:
-        shutil.copy(img, test_boring / img.name)
-    
+    for img in select_train:
+        shutil.copy(img, train_select / img.name)
+
+    for img in select_test:
+        shutil.copy(img, test_select / img.name)
+
+    for img in reject_train:
+        shutil.copy(img, train_reject / img.name)
+
+    for img in reject_test:
+        shutil.copy(img, test_reject / img.name)
+
     # Compute class weights for weighted loss (to handle imbalance)
-    total_interesting = len(interesting_train)
-    total_boring = len(boring_train)
-    total = total_interesting + total_boring
-    
-    weight_interesting = total / (2 * total_interesting)
-    weight_boring = total / (2 * total_boring)
-    
+    total_select = len(select_train)
+    total_reject = len(reject_train)
+    total = total_select + total_reject
+
+    weight_select = total / (2 * total_select)
+    weight_reject = total / (2 * total_reject)
+
     stats = {
         "train": {
-            "interesting": len(interesting_train),
-            "boring": len(boring_train)
+            "select": len(select_train),
+            "reject": len(reject_train)
         },
         "test": {
-            "interesting": len(interesting_test),
-            "boring": len(boring_test)
+            "select": len(select_test),
+            "reject": len(reject_test)
         },
         "class_weights": {
-            "interesting": weight_interesting,
-            "boring": weight_boring
+            "select": weight_select,
+            "reject": weight_reject
         },
-        "interesting_ratio": round(total_interesting / total * 100, 2)
+        "select_ratio": round(total_select / total * 100, 2)
     }
-    
+
     # Save stats
     stats_file = output_dir / "dataset_stats.json"
     with open(stats_file, 'w') as f:
         json.dump(stats, f, indent=2)
-    
+
     print(f"\nClass weights (for loss function):")
-    print(f"  interesting: {weight_interesting:.4f}")
-    print(f"  boring: {weight_boring:.4f}")
-    print(f"  interesting ratio: {stats['interesting_ratio']}%")
+    print(f"  select: {weight_select:.4f}")
+    print(f"  reject: {weight_reject:.4f}")
+    print(f"  select ratio: {stats['select_ratio']}%")
     print(f"\nDataset stats saved to {stats_file}")
     
     return stats

@@ -12,8 +12,9 @@ Usage:
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, ImageFolder
+from torch.utils.data import DataLoader
 from torchvision import models, transforms
+from torchvision.datasets import ImageFolder
 import argparse
 import json
 from pathlib import Path
@@ -72,11 +73,11 @@ def load_class_weights(dataset_dir):
     stats_file = Path(dataset_dir) / "dataset_stats.json"
     with open(stats_file, 'r') as f:
         stats = json.load(f)
-    
+
     weights = stats['class_weights']
-    # Order matters: alphabetically, "boring" comes first, "interesting" second
-    weight_tensor = torch.tensor([weights['boring'], weights['interesting']], dtype=torch.float32)
-    
+    # Order matters: alphabetically, "reject" comes first, "select" second
+    weight_tensor = torch.tensor([weights['reject'], weights['select']], dtype=torch.float32)
+
     print(f"Class weights: {weight_tensor}")
     return weight_tensor
 
@@ -140,7 +141,12 @@ def train_classifier(dataset_dir, model_output="model.pt", epochs=15, learning_r
     Fine-tune ResNet50 on the classification task.
     """
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     print(f"Using device: {device}")
     
     # Load data
