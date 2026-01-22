@@ -1,54 +1,50 @@
 # Status
 
-## Current Phase: Foundation Setup
+## Current Phase: Production Ready
 
 ### ✅ Completed
 
-- [x] Snapdragon 8 RDK X5 hardware arrived (2 weeks early)
-- [x] Project repo created in Gitea
-- [x] Code skeleton written (3 scripts + docs)
-- [x] Architecture designed:
-  - Phase 1: Training classifier before Sebring (target: ~2 weeks)
-  - Phase 2: Hotel inference + XMP integration (at Sebring)
-  - Phase 3: Real-time Z9 attachment (post-Sebring, optional nice-to-have)
+- [x] Model trained on Lime Rock data (select/reject classes)
+- [x] Batched inference with MPS (Apple Silicon) support
+- [x] Burst deduplication (picks best frame per burst)
+- [x] Tiered keyword output (robo_97, robo_98, robo_99)
+- [x] JPEG keyword embedding via exiftool
+- [x] XMP sidecar support for RAW files
+- [x] Consolidated `classify.py` pipeline
+- [x] Tested on 42k image dataset (Lime Rock)
 
-### 🚧 In Progress
+### Results (Lime Rock Test)
 
-- [ ] Snapdragon board physical setup
-- [ ] Development environment (Python, PyTorch)
-- [ ] Lightroom frame export (interesting + boring samples)
+```
+Total images:      41,798
+Classified select: 35,746 (85.5%)
+Classified reject:  6,052 (14.5%)
+Burst winners:     10,043 (select only)
 
-### ⏭️ Next Steps (This Week)
+Keyword tiers:
+  robo_99 (≥0.99):    329
+  robo_98 (≥0.98):  1,367
+  robo_97 (≥0.97):  1,755
+  Below threshold:  6,592
 
-1. **Hardware**: Unbox, boot, verify camera module
-2. **Environment**: Python 3.11+, PyTorch with appropriate device support (CPU/GPU/MPS)
-3. **Data**: Export 275 Lime Rock interesting frames + ~2000-3000 boring frames to organized directories
-4. **Execution**: Run `prepare_training_data.py` to create train/test splits
+Burst siblings tagged 'select': 13,663
+```
 
-### Timeline
+### Workflow
 
-| Phase | Task | Target | Status |
-|-------|------|--------|--------|
-| 1 | Data prep | This week | Pending |
-| 1 | Training | 1 week after data | Not started |
-| 1 | Accuracy eval | 2 weeks before Sebring | Not started |
-| 2 | Hotel workflow | At Sebring | Not started |
-| 2 | XMP integration | At Sebring | Not started |
-| 3 | Real-time Z9 | Post-Sebring | Not started |
+1. Copy images from camera cards to working directory
+2. Run: `source .venv/bin/activate && python classify.py /path/to/images`
+3. Import into Lightroom
+4. Use smart collections (robo_99, robo_98, robo_97, select) to review
 
-### Known Issues
+### Known Limitations
 
-- None yet (hardware just arrived)
+- Lightroom ignores XMP sidecars for JPEGs (must embed keywords directly)
+- NEF processing requires ImageMagick for preview extraction
+- Model trained on racing footage; may not generalize to other domains
 
-### Questions/Decisions Needed
+### Future Work
 
-- [ ] ImageMagick installed on M4 Max for NEF preview extraction? (If not, will need `brew install imagemagick`)
-- [ ] Preference on PyTorch device (MPS for Apple Silicon, or CPU)?
-- [ ] Exact Sebring date (needed for scheduling)?
-
-## Notes
-
-- Class imbalance is expected and handled in loss function
-- 275 interesting frames from Lime Rock + ~3000 boring gives solid training signal
-- Sebring shooting ~10,000 frames from Z9 + ~10,000 from Vic's Z6III
-- Hotel workflow (batch classification + XMP) is the MVP; real-time Z9 is future-nice-to-have
+- [ ] Real-time Z9 attachment over USB/network
+- [ ] Model retraining with Sebring data
+- [ ] Confidence threshold tuning based on field experience
