@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-write_tiered_xmps.py
+write_tiered_keywords.py
 
-Reads a winners CSV and writes XMP sidecars with tiered keywords based on confidence.
+Reads a winners CSV and writes tiered keywords based on confidence.
+- For RAW files (NEF): writes XMP sidecars
+- For JPEGs: embeds keywords directly using exiftool
 
 Tiers:
   - robo_99: confidence >= 0.99
@@ -10,12 +12,13 @@ Tiers:
   - robo_97: confidence >= 0.97
 
 Usage:
-    python write_tiered_xmps.py --winners lime-rock-winners.csv --nef_dir /path/to/nefs
-    python write_tiered_xmps.py --winners lime-rock-winners.csv  # writes next to source JPGs
+    python write_tiered_keywords.py --winners results.csv
+    python write_tiered_keywords.py --winners results.csv --nef_dir /path/to/nefs
 """
 
 import argparse
 import csv
+import subprocess
 from pathlib import Path
 
 
@@ -30,10 +33,9 @@ def get_tier_keyword(confidence):
     return None
 
 
-def write_xmp_sidecar(target_path, keyword, confidence):
+def write_xmp_sidecar(target_path, keyword):
     """
-    Write XMP sidecar with tiered keyword.
-    target_path: the NEF or image file to write sidecar for
+    Write XMP sidecar with tiered keyword (for RAW files).
     """
     xmp_path = target_path.with_suffix(".xmp")
 
@@ -61,9 +63,33 @@ def write_xmp_sidecar(target_path, keyword, confidence):
     return True
 
 
+def embed_keyword_in_jpeg(jpeg_path, keyword):
+    """
+    Embed keyword directly into JPEG using exiftool.
+    Uses += to add without overwriting existing keywords.
+    """
+    try:
+        result = subprocess.run(
+            [
+                'exiftool',
+                '-overwrite_original',
+                f'-Keywords+={keyword}',
+                f'-Subject+={keyword}',
+                f'-HierarchicalSubject+=robo|{keyword}',
+                str(jpeg_path)
+            ],
+            capture_output=True,
+            text=True
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        print("ERROR: exiftool not found. Install with: brew install exiftool")
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Write tiered XMP sidecars from winners CSV"
+        description="Write tiered keywords from winners CSV"
     )
     parser.add_argument(
         "--winners",
@@ -72,7 +98,7 @@ def main():
     )
     parser.add_argument(
         "--nef_dir",
-        help="Directory containing NEF files (if different from JPG source)"
+        help="Directory containing NEF files (writes XMP sidecars there)"
     )
     parser.add_argument(
         "--dry_run",
@@ -81,6 +107,15 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Check for exiftool if we might need it
+    if not args.nef_dir:
+        try:
+            subprocess.run(['exiftool', '-ver'], capture_output=True)
+        except FileNotFoundError:
+            print("ERROR: exiftool not found. Install with: brew install exiftool")
+            print("       Or use --nef_dir to write XMP sidecars for RAW files instead.")
+            return
 
     # Read winners
     with open(args.winners) as f:
@@ -91,8 +126,9 @@ def main():
     # Count tiers
     tier_counts = {"robo_99": 0, "robo_98": 0, "robo_97": 0, "below_threshold": 0}
     written = 0
+    errors = 0
 
-    for row in winners:
+    for i, row in enumerate(winners, 1):
         confidence = float(row['confidence_select'])
         keyword = get_tier_keyword(confidence)
 
@@ -102,7 +138,7 @@ def main():
 
         tier_counts[keyword] += 1
 
-        # Determine target path
+        # Determine target path and method
         source_path = Path(row['path'])
         stem = source_path.stem
 
@@ -114,16 +150,32 @@ def main():
                 target = nef_dir / f"{stem}.nef"
             if not target.exists():
                 print(f"  WARNING: No NEF found for {stem}")
+                errors += 1
                 continue
+            use_xmp = True
         else:
-            # Write sidecar next to source file
+            # Write directly to source file
             target = source_path
+            # Use XMP for RAW files, embed for JPEGs
+            use_xmp = target.suffix.lower() in ['.nef', '.cr2', '.cr3', '.arw', '.orf', '.raf', '.dng']
 
         if args.dry_run:
-            print(f"  Would write {target}.xmp with {keyword}")
+            method = "XMP sidecar" if use_xmp else "embed in JPEG"
+            print(f"  [{i}/{len(winners)}] Would write {keyword} to {target.name} ({method})")
         else:
-            write_xmp_sidecar(target, keyword, confidence)
-            written += 1
+            if use_xmp:
+                success = write_xmp_sidecar(target, keyword)
+            else:
+                success = embed_keyword_in_jpeg(target, keyword)
+
+            if success:
+                written += 1
+            else:
+                errors += 1
+
+            # Progress indicator
+            if i % 100 == 0:
+                print(f"  Processed {i}/{len(winners)}...")
 
     print(f"\n=== SUMMARY ===")
     print(f"robo_99 (>=0.99): {tier_counts['robo_99']}")
@@ -132,7 +184,9 @@ def main():
     print(f"Below threshold:  {tier_counts['below_threshold']}")
 
     if not args.dry_run:
-        print(f"\nWrote {written} XMP sidecars")
+        print(f"\nWrote {written} keywords")
+        if errors:
+            print(f"Errors: {errors}")
     else:
         print(f"\n(dry run - no files written)")
 
