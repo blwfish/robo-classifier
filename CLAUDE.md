@@ -15,38 +15,55 @@ Classifies racing photos to find notable moments:
 
 ```
 robo-classifier/
+├── classify.py               # Main pipeline: inference + dedup + keywords
 ├── prepare_training_data.py  # Split Lightroom exports into train/test
 ├── train_classifier.py       # Fine-tune ResNet50 (weighted loss for imbalance)
-├── inference_hotel.py        # Batch classify + write XMP sidecars
+├── inference_hotel.py        # Batch classify (low-level, used by classify.py)
+├── write_tiered_keywords.py  # Standalone keyword writer
 ├── select/                   # Sample "interesting" images
 ├── reject/                   # Sample "boring" images
-└── model.pt                  # Trained model (generated)
+├── model.pt                  # Trained model (generated)
+└── .venv/                    # Python virtual environment
 ```
 
 ## Workflow
 
+### Production (after each shoot)
+
+```bash
+source .venv/bin/activate
+python classify.py /path/to/images
+```
+
+### Training (one-time)
+
 1. **Data Prep**: Export JPGs from Lightroom to `select/` and `reject/`
 2. **Split**: `python prepare_training_data.py --data_dir . --output_dir ./dataset`
 3. **Train**: `python train_classifier.py --dataset_dir ./dataset --model_output model.pt`
-4. **Infer**: `python inference_hotel.py --model model.pt --input_dir ./NEFs --output_csv results.csv`
 
 ## Dependencies
 
 ```bash
-pip install torch torchvision scikit-learn Pillow
-brew install imagemagick  # for NEF preview extraction
+# In .venv
+pip install torch torchvision scikit-learn pillow
+brew install exiftool      # for JPEG keyword embedding
+brew install imagemagick   # for NEF preview extraction (optional)
 ```
 
 ## Key Details
 
 - **Model**: ResNet50 pretrained on ImageNet, fine-tuned for binary classification
 - **Input size**: 224x224
+- **Device**: Auto-detects MPS (Apple Silicon), CUDA, or CPU
 - **Class imbalance**: ~3% interesting, handled via weighted CrossEntropyLoss
-- **XMP sidecars**: Written for Lightroom smart collections (keyword: `select`)
-- **NEF support**: Uses ImageMagick to extract embedded preview
+- **Burst detection**: Groups by filename stem (e.g., `BLW0124-3.jpg` → `BLW0124`)
+- **Keywords**:
+  - `robo_99`, `robo_98`, `robo_97` for tiered confidence winners
+  - `select` for all frames in qualifying bursts
+  - Embedded in JPEGs via exiftool; XMP sidecars for RAW files
 
-## Environment
+## Output
 
-- Python 3.11+
-- PyTorch with MPS (Apple Silicon) or CUDA support
-- ImageMagick for NEF processing
+- `results.csv` - all images with classifications and confidence scores
+- `winners.csv` - best frame per burst (select only)
+- Keywords embedded in files for Lightroom smart collections
