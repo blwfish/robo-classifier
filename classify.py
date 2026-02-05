@@ -45,43 +45,115 @@ JPG_EXTENSIONS = {'.jpg', '.jpeg', '.png'}
 # RAW Preview Extraction
 # =============================================================================
 
-def extract_raw_preview(raw_path, output_path):
+class ExiftoolProcess:
     """
-    Extract embedded preview from RAW file using exiftool.
-    Returns True on success, False on failure.
+    Persistent exiftool process using -stay_open mode.
+    Avoids process spawn overhead for each file.
+
+    For binary output (like -b -PreviewImage), we read in chunks and look
+    for the ready marker since binary data doesn't have nice line endings.
     """
-    try:
-        result = subprocess.run(
-            ['exiftool', '-b', '-PreviewImage', str(raw_path)],
-            capture_output=True,
-            check=True
+
+    def __init__(self):
+        self.process = None
+        self._seq = 0
+        self._start()
+
+    def _start(self):
+        """Start exiftool in stay_open mode."""
+        self.process = subprocess.Popen(
+            ['exiftool', '-stay_open', 'True', '-@', '-'],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
         )
-        if result.stdout:
-            with open(output_path, 'wb') as f:
-                f.write(result.stdout)
-            return True
-        return False
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
+        self._seq = 0
+
+    def execute(self, *args):
+        """
+        Execute an exiftool command and return stdout bytes.
+        Args are passed as command line arguments.
+        """
+        if self.process is None or self.process.poll() is not None:
+            self._start()
+
+        # Build command: each arg on its own line, terminated by -execute with sequence num
+        # The sequence number is appended to {ready} marker, e.g., {ready0}, {ready1}
+        cmd = '\n'.join(args) + f'\n-execute{self._seq}\n'
+        ready_marker = f'{{ready{self._seq}}}'.encode('utf-8')
+        self._seq += 1
+
+        self.process.stdin.write(cmd.encode('utf-8'))
+        self.process.stdin.flush()
+
+        # Read output in chunks, looking for the ready marker
+        # Binary data (like previews) won't have line endings, so we can't use readline()
+        output = b''
+        chunk_size = 65536  # 64KB chunks
+        while True:
+            import select
+            # Check if there's data available (with timeout)
+            readable, _, _ = select.select([self.process.stdout], [], [], 30)
+            if not readable:
+                break  # Timeout - something went wrong
+
+            chunk = self.process.stdout.read1(chunk_size) if hasattr(self.process.stdout, 'read1') else self.process.stdout.read(chunk_size)
+            if not chunk:
+                break
+            output += chunk
+
+            # Check if ready marker is at the end
+            if output.rstrip().endswith(ready_marker):
+                # Remove the marker and any trailing newline before it
+                output = output.rstrip()
+                if output.endswith(ready_marker):
+                    output = output[:-len(ready_marker)].rstrip()
+                break
+
+        return output
+
+    def close(self):
+        """Shutdown the exiftool process."""
+        if self.process and self.process.poll() is None:
+            self.process.stdin.write(b'-stay_open\nFalse\n')
+            self.process.stdin.flush()
+            self.process.wait()
+        self.process = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
 
 def extract_raw_previews(raw_files, temp_dir):
     """
     Extract previews from all RAW files to temp directory.
+    Uses exiftool's -stay_open mode for efficiency.
     Returns dict mapping original RAW path to preview path.
     """
     preview_map = {}
     failed = []
 
     print(f"Extracting previews from {len(raw_files)} RAW files...")
-    for i, raw_path in enumerate(raw_files, 1):
-        preview_path = Path(temp_dir) / f"{raw_path.stem}_preview.jpg"
-        if extract_raw_preview(raw_path, preview_path):
-            preview_map[raw_path] = preview_path
-        else:
-            failed.append(raw_path)
-        if i % 100 == 0 or i == len(raw_files):
-            print(f"\r  Extracted {i}/{len(raw_files)} previews...", end="", flush=True)
+
+    with ExiftoolProcess() as et:
+        for i, raw_path in enumerate(raw_files, 1):
+            preview_path = Path(temp_dir) / f"{raw_path.stem}_preview.jpg"
+
+            # Extract preview using persistent process
+            preview_data = et.execute('-b', '-PreviewImage', str(raw_path))
+
+            if preview_data:
+                with open(preview_path, 'wb') as f:
+                    f.write(preview_data)
+                preview_map[raw_path] = preview_path
+            else:
+                failed.append(raw_path)
+
+            if i % 100 == 0 or i == len(raw_files):
+                print(f"\r  Extracted {i}/{len(raw_files)} previews...", end="", flush=True)
 
     print()
     if failed:
