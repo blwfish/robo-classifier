@@ -17,11 +17,13 @@ For RAW files (NEF, CR2, ARW, etc.), previews are extracted via exiftool.
 
 import argparse
 import csv
+import json
 import os
 import re
 import subprocess
 import tempfile
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 import torch
@@ -250,16 +252,152 @@ def parse_burst_base(filename):
     return stem
 
 
-def burst_dedup(results):
+def get_capture_times(file_paths):
     """
-    Group results by burst base, pick the one with highest confidence_select.
+    Extract capture time and shutter speed from image files using exiftool.
+    Returns dict mapping path -> {'timestamp': float, 'shutter': float}
+    """
+    if not file_paths:
+        return {}
+
+    # Use exiftool JSON output for batch extraction
+    paths_str = [str(p) for p in file_paths]
+    try:
+        result = subprocess.run(
+            ['exiftool', '-json', '-DateTimeOriginal', '-SubSecTimeOriginal', '-ExposureTime'] + paths_str,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            return {}
+
+        data = json.loads(result.stdout)
+    except (subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError):
+        return {}
+
+    capture_times = {}
+    for item in data:
+        path = Path(item.get('SourceFile', ''))
+
+        # Parse timestamp
+        dt_str = item.get('DateTimeOriginal', '')
+        subsec = item.get('SubSecTimeOriginal', '0')
+
+        if not dt_str:
+            continue
+
+        try:
+            # Parse "2026:01:31 11:12:34" format
+            dt = datetime.strptime(dt_str, '%Y:%m:%d %H:%M:%S')
+            # Add subseconds
+            subsec_float = float(f'0.{subsec}') if subsec else 0.0
+            timestamp = dt.timestamp() + subsec_float
+        except (ValueError, TypeError):
+            continue
+
+        # Parse shutter speed (might be "1/1000" or "0.001" or similar)
+        shutter = 0.0
+        exp_str = item.get('ExposureTime', '')
+        if exp_str:
+            try:
+                if '/' in str(exp_str):
+                    num, denom = str(exp_str).split('/')
+                    shutter = float(num) / float(denom)
+                else:
+                    shutter = float(exp_str)
+            except (ValueError, TypeError):
+                pass
+
+        capture_times[path] = {'timestamp': timestamp, 'shutter': shutter}
+
+    return capture_times
+
+
+def burst_dedup_by_time(results, capture_times, threshold=0.5):
+    """
+    Group results into bursts based on capture time proximity.
+    Two frames are in the same burst if the gap between them is less than
+    max(threshold, shutter_speed + 0.05).
+
+    Args:
+        results: list of result dicts with 'path' keys
+        capture_times: dict from get_capture_times()
+        threshold: base time threshold in seconds (default 0.5s)
+
+    Returns:
+        winners: list of winner results (best frame per burst, select only)
+        bursts: dict mapping burst_id to list of all frames in that burst
+    """
+    # Sort results by capture time
+    def get_time(r):
+        path = Path(r['path'])
+        ct = capture_times.get(path, {})
+        return ct.get('timestamp', 0)
+
+    sorted_results = sorted(results, key=get_time)
+
+    # Group into bursts
+    bursts = defaultdict(list)
+    burst_id = 0
+
+    for i, r in enumerate(sorted_results):
+        path = Path(r['path'])
+        ct = capture_times.get(path, {})
+        timestamp = ct.get('timestamp', 0)
+        shutter = ct.get('shutter', 0)
+
+        if i == 0:
+            bursts[burst_id].append(r)
+            continue
+
+        # Check gap to previous frame
+        prev_r = sorted_results[i - 1]
+        prev_path = Path(prev_r['path'])
+        prev_ct = capture_times.get(prev_path, {})
+        prev_timestamp = prev_ct.get('timestamp', 0)
+        prev_shutter = prev_ct.get('shutter', 0)
+
+        gap = timestamp - prev_timestamp
+
+        # Adaptive threshold: max of base threshold or shutter + buffer
+        adaptive_threshold = max(threshold, max(shutter, prev_shutter) + 0.1)
+
+        if gap > adaptive_threshold:
+            # New burst
+            burst_id += 1
+
+        bursts[burst_id].append(r)
+
+    # Pick best from each burst, only if classified as "select"
+    winners = []
+    for bid, frames in bursts.items():
+        best = max(frames, key=lambda x: x['confidence_select'])
+        if best['classification'] == 'select':
+            winners.append(best)
+
+    # Convert burst keys to strings for consistency
+    bursts_dict = {f'burst_{k}': v for k, v in bursts.items()}
+
+    return winners, bursts_dict
+
+
+def burst_dedup(results, capture_times=None, time_threshold=None):
+    """
+    Group results by burst, pick the one with highest confidence_select.
     Only keeps winners that are classified as "select".
+
+    If time_threshold is provided and capture_times available, uses time-based
+    grouping. Otherwise falls back to filename-based grouping.
 
     Returns:
         winners: list of winner results (best frame per burst, select only)
         bursts: dict mapping burst base to list of all frames in that burst
     """
-    # Group by burst base
+    # Use time-based grouping if threshold specified and we have capture times
+    if time_threshold is not None and time_threshold > 0 and capture_times:
+        return burst_dedup_by_time(results, capture_times, time_threshold)
+
+    # Fall back to filename-based grouping
     bursts = defaultdict(list)
     for r in results:
         base = parse_burst_base(r['filename'])
@@ -272,7 +410,7 @@ def burst_dedup(results):
         if best['classification'] == 'select':
             winners.append(best)
 
-    return winners, bursts
+    return winners, dict(bursts)
 
 
 # =============================================================================
@@ -388,13 +526,19 @@ def write_keywords(winners, bursts, nef_dir=None):
 
     Args:
         winners: list of winner results (best frame per burst)
-        bursts: dict mapping burst base to list of all frames
+        bursts: dict mapping burst key to list of all frames
         nef_dir: optional directory for NEF files (writes XMP sidecars there)
     """
     tier_counts = {"robo_99": 0, "robo_98": 0, "robo_97": 0, "below_threshold": 0}
     winner_written = 0
     select_written = 0
     errors = 0
+
+    # Build reverse lookup: path -> burst_key
+    path_to_burst = {}
+    for burst_key, frames in bursts.items():
+        for frame in frames:
+            path_to_burst[frame['path']] = burst_key
 
     # Track which bursts have winners above threshold
     qualifying_bursts = set()
@@ -409,8 +553,9 @@ def write_keywords(winners, bursts, nef_dir=None):
             continue
 
         tier_counts[keyword] += 1
-        base = parse_burst_base(row['filename'])
-        qualifying_bursts.add(base)
+        burst_key = path_to_burst.get(row['path'])
+        if burst_key:
+            qualifying_bursts.add(burst_key)
 
         if write_keyword_to_file(row['path'], keyword, nef_dir):
             winner_written += 1
@@ -418,8 +563,8 @@ def write_keywords(winners, bursts, nef_dir=None):
             errors += 1
 
     # Second pass: write 'select' to all frames in qualifying bursts
-    for base in qualifying_bursts:
-        for frame in bursts[base]:
+    for burst_key in qualifying_bursts:
+        for frame in bursts[burst_key]:
             if write_keyword_to_file(frame['path'], 'select', nef_dir):
                 select_written += 1
             else:
@@ -496,6 +641,15 @@ def main():
         action="store_true",
         help="Don't write anything, just show what would happen"
     )
+    parser.add_argument(
+        "--burst_threshold",
+        type=float,
+        default=None,
+        help="Time-based burst grouping threshold in seconds (e.g., 0.5). "
+             "Frames captured within this time window are grouped together. "
+             "Adapts to shutter speed (slow shutters get larger thresholds). "
+             "Default: disabled (uses filename-based grouping)"
+    )
 
     args = parser.parse_args()
 
@@ -563,8 +717,21 @@ def main():
 
     # Step 3: Burst dedup
     print(f"\n=== Step 3: Burst deduplication ===")
-    winners, bursts = burst_dedup(results)
+
+    # Get capture times if time-based burst grouping requested
+    capture_times = {}
+    if args.burst_threshold is not None and args.burst_threshold > 0:
+        print(f"Using time-based burst grouping (threshold={args.burst_threshold}s)")
+        all_paths = [Path(r['path']) for r in results]
+        print(f"Extracting capture times from {len(all_paths)} images...")
+        capture_times = get_capture_times(all_paths)
+        print(f"  Got timestamps for {len(capture_times)} images")
+    else:
+        print("Using filename-based burst grouping")
+
+    winners, bursts = burst_dedup(results, capture_times, args.burst_threshold)
     print(f"Reduced {len(results)} images to {len(winners)} burst winners (select only)")
+    print(f"  ({len(bursts)} unique bursts detected)")
 
     # Write winners CSV
     winners_csv = output_dir / "winners.csv"
@@ -582,11 +749,19 @@ def main():
         print(f"\n=== Step 4: Writing tiered keywords ===")
         if args.dry_run:
             qualifying_bursts = set()
+            # Build reverse lookup: path -> burst_key
+            path_to_burst = {}
+            for burst_key, frames in bursts.items():
+                for frame in frames:
+                    path_to_burst[frame['path']] = burst_key
+
             for w in winners:
                 kw = get_tier_keyword(w['confidence_select'])
                 if kw:
                     tier_counts[kw] += 1
-                    qualifying_bursts.add(parse_burst_base(w['filename']))
+                    burst_key = path_to_burst.get(w['path'])
+                    if burst_key:
+                        qualifying_bursts.add(burst_key)
                 else:
                     tier_counts["below_threshold"] += 1
             select_count = sum(len(bursts[b]) for b in qualifying_bursts)
