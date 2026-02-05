@@ -3,7 +3,7 @@
 classify.py
 
 End-to-end image classification pipeline:
-1. Run inference on all images
+1. Run inference on all images (JPG, PNG, or RAW with preview extraction)
 2. Burst dedup: pick best frame per burst
 3. Write tiered keywords (embed for JPG, XMP for RAW)
 
@@ -11,10 +11,13 @@ Usage:
     python classify.py /path/to/images
     python classify.py /path/to/images --output_dir ./output
     python classify.py /path/to/images --nef_dir /path/to/nefs  # XMP sidecars for RAWs
+
+For RAW files (NEF, CR2, ARW, etc.), previews are extracted via exiftool.
 """
 
 import argparse
 import csv
+import os
 import re
 import subprocess
 import tempfile
@@ -26,6 +29,63 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
 from PIL import Image
+
+
+# =============================================================================
+# Constants
+# =============================================================================
+
+RAW_EXTENSIONS = {'.nef', '.cr2', '.cr3', '.arw', '.orf', '.raf', '.dng', '.rw2'}
+JPG_EXTENSIONS = {'.jpg', '.jpeg', '.png'}
+
+
+# =============================================================================
+# RAW Preview Extraction
+# =============================================================================
+
+def extract_raw_preview(raw_path, output_path):
+    """
+    Extract embedded preview from RAW file using exiftool.
+    Returns True on success, False on failure.
+    """
+    try:
+        result = subprocess.run(
+            ['exiftool', '-b', '-PreviewImage', str(raw_path)],
+            capture_output=True,
+            check=True
+        )
+        if result.stdout:
+            with open(output_path, 'wb') as f:
+                f.write(result.stdout)
+            return True
+        return False
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def extract_raw_previews(raw_files, temp_dir):
+    """
+    Extract previews from all RAW files to temp directory.
+    Returns dict mapping original RAW path to preview path.
+    """
+    preview_map = {}
+    failed = []
+
+    print(f"Extracting previews from {len(raw_files)} RAW files...")
+    for i, raw_path in enumerate(raw_files, 1):
+        preview_path = Path(temp_dir) / f"{raw_path.stem}_preview.jpg"
+        if extract_raw_preview(raw_path, preview_path):
+            preview_map[raw_path] = preview_path
+        else:
+            failed.append(raw_path)
+        if i % 100 == 0 or i == len(raw_files):
+            print(f"\r  Extracted {i}/{len(raw_files)} previews...", end="", flush=True)
+
+    print()
+    if failed:
+        print(f"  WARNING: Failed to extract {len(failed)} previews")
+
+    return preview_map
 
 
 # =============================================================================
@@ -94,8 +154,21 @@ class ImageDataset(Dataset):
 # Inference
 # =============================================================================
 
-def run_inference(classifier, image_files, batch_size=32, num_workers=4):
-    """Run batched inference on image files."""
+def run_inference(classifier, image_files, batch_size=32, num_workers=4, original_paths=None):
+    """
+    Run batched inference on image files.
+
+    Args:
+        classifier: ImageClassifier instance
+        image_files: list of paths to classify (may be previews for RAW)
+        batch_size: batch size for DataLoader
+        num_workers: number of workers for DataLoader
+        original_paths: optional dict mapping image_file -> original path
+                       (used when classifying extracted previews)
+
+    Returns:
+        list of result dicts with original paths
+    """
     results = []
 
     if not image_files:
@@ -129,13 +202,19 @@ def run_inference(classifier, image_files, batch_size=32, num_workers=4):
                 if not valid:
                     continue
 
+                # Use original path if provided (for RAW files)
+                if original_paths and image_path in original_paths:
+                    actual_path = original_paths[image_path]
+                else:
+                    actual_path = image_path
+
                 pred_idx = pred_indices[i].item()
                 pred_class = classifier.class_names[pred_idx]
                 confidence = probs[i, pred_idx].item()
 
                 result = {
-                    'filename': image_path.name,
-                    'path': str(image_path),
+                    'filename': actual_path.name,
+                    'path': str(actual_path),
                     'classification': pred_class,
                     'confidence': confidence,
                     'confidence_reject': probs[i, classifier.class_to_idx['reject']].item(),
@@ -212,31 +291,46 @@ def get_tier_keyword(confidence):
 
 
 def write_xmp_sidecar(target_path, keyword):
-    """Write XMP sidecar with tiered keyword (for RAW files)."""
-    xmp_path = target_path.with_suffix(".xmp")
+    """
+    Write keyword to XMP sidecar for RAW file.
+    Uses exiftool to create/update sidecar, preserving existing metadata.
+    """
+    target_path = Path(target_path)
+    xmp_path = target_path.with_suffix('.xmp')
 
-    xmp_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<x:xmpmeta xmlns:x="adobe:ns:meta/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:lr="http://ns.adobe.com/lightroom/1.0/">
-  <rdf:RDF>
-    <rdf:Description rdf:about="">
-      <dc:subject>
-        <rdf:Bag>
-          <rdf:li>{keyword}</rdf:li>
-        </rdf:Bag>
-      </dc:subject>
-      <lr:hierarchicalSubject>
-        <rdf:Bag>
-          <rdf:li>robo|{keyword}</rdf:li>
-        </rdf:Bag>
-      </lr:hierarchicalSubject>
-    </rdf:Description>
-  </rdf:RDF>
-</x:xmpmeta>
-"""
-
-    with open(xmp_path, 'w') as f:
-        f.write(xmp_content)
-    return True
+    try:
+        # If XMP exists, update it; otherwise create from RAW metadata
+        if xmp_path.exists():
+            # Update existing XMP sidecar
+            result = subprocess.run(
+                [
+                    'exiftool',
+                    '-overwrite_original',
+                    f'-Keywords+={keyword}',
+                    f'-Subject+={keyword}',
+                    f'-HierarchicalSubject+=robo|{keyword}',
+                    str(xmp_path)
+                ],
+                capture_output=True,
+                text=True
+            )
+        else:
+            # Create new XMP sidecar from RAW, then add keyword
+            result = subprocess.run(
+                [
+                    'exiftool',
+                    '-tagsfromfile', str(target_path),
+                    f'-Keywords+={keyword}',
+                    f'-Subject+={keyword}',
+                    f'-HierarchicalSubject+=robo|{keyword}',
+                    '-o', str(xmp_path)
+                ],
+                capture_output=True,
+                text=True
+            )
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
 
 
 def embed_keyword_in_jpeg(jpeg_path, keyword):
@@ -280,8 +374,7 @@ def write_keyword_to_file(target_path, keyword, nef_dir=None):
     else:
         # Write to source file
         target = source_path
-        is_raw = target.suffix.lower() in ['.nef', '.cr2', '.cr3', '.arw', '.orf', '.raf', '.dng']
-        if is_raw:
+        if target.suffix.lower() in RAW_EXTENSIONS:
             return write_xmp_sidecar(target, keyword)
         else:
             return embed_keyword_in_jpeg(target, keyword)
@@ -340,12 +433,24 @@ def write_keywords(winners, bursts, nef_dir=None):
 # =============================================================================
 
 def find_images(input_dir):
-    """Find all image files in directory."""
+    """
+    Find all image files in directory.
+    Returns (jpg_files, raw_files) tuple.
+    """
     input_dir = Path(input_dir)
-    image_files = []
-    for ext in ['*.jpg', '*.JPG', '*.jpeg', '*.JPEG', '*.png', '*.PNG']:
-        image_files.extend(input_dir.glob(ext))
-    return sorted(image_files)
+    jpg_files = []
+    raw_files = []
+
+    for f in input_dir.iterdir():
+        if not f.is_file():
+            continue
+        ext = f.suffix.lower()
+        if ext in JPG_EXTENSIONS:
+            jpg_files.append(f)
+        elif ext in RAW_EXTENSIONS:
+            raw_files.append(f)
+
+    return sorted(jpg_files), sorted(raw_files)
 
 
 def main():
@@ -397,28 +502,55 @@ def main():
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir) if args.output_dir else input_dir
 
-    # Check for exiftool if we'll need it
-    if not args.no_keywords and not args.nef_dir and not args.dry_run:
-        try:
-            subprocess.run(['exiftool', '-ver'], capture_output=True, check=True)
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            print("ERROR: exiftool not found. Install with: brew install exiftool")
-            print("       Or use --nef_dir to write XMP sidecars instead.")
-            return 1
+    # Check for exiftool (needed for RAW preview extraction and JPEG keyword embedding)
+    try:
+        subprocess.run(['exiftool', '-ver'], capture_output=True, check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        print("ERROR: exiftool not found. Install with: brew install exiftool")
+        return 1
 
     # Step 1: Find images
     print(f"\n=== Step 1: Finding images in {input_dir} ===")
-    image_files = find_images(input_dir)
-    print(f"Found {len(image_files)} images")
+    jpg_files, raw_files = find_images(input_dir)
+    total_files = len(jpg_files) + len(raw_files)
+    print(f"Found {len(jpg_files)} JPG/PNG files and {len(raw_files)} RAW files")
 
-    if not image_files:
+    if total_files == 0:
         print("No images found. Exiting.")
         return 1
 
     # Step 2: Run inference
     print(f"\n=== Step 2: Running inference ===")
     classifier = ImageClassifier(args.model)
-    results = run_inference(classifier, image_files, args.batch_size, args.num_workers)
+
+    results = []
+
+    # Process JPG files directly
+    if jpg_files:
+        jpg_results = run_inference(classifier, jpg_files, args.batch_size, args.num_workers)
+        results.extend(jpg_results)
+
+    # Process RAW files by extracting previews first
+    if raw_files:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Extract previews
+            preview_map = extract_raw_previews(raw_files, temp_dir)
+
+            if preview_map:
+                # Build reverse mapping: preview_path -> original_raw_path
+                preview_to_original = {v: k for k, v in preview_map.items()}
+                preview_files = list(preview_map.values())
+
+                # Run inference on previews
+                raw_results = run_inference(
+                    classifier, preview_files, args.batch_size, args.num_workers,
+                    original_paths=preview_to_original
+                )
+                results.extend(raw_results)
+
+    if not results:
+        print("\nNo images could be processed. Exiting.")
+        return 1
 
     # Write full results CSV
     results_csv = output_dir / "results.csv"
@@ -436,7 +568,7 @@ def main():
 
     # Write winners CSV
     winners_csv = output_dir / "winners.csv"
-    if not args.dry_run:
+    if not args.dry_run and winners:
         print(f"Writing winners to {winners_csv}")
         with open(winners_csv, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=winners[0].keys())
@@ -444,10 +576,11 @@ def main():
             writer.writerows(winners)
 
     # Step 4: Write keywords
-    if not args.no_keywords:
+    tier_counts = {"robo_99": 0, "robo_98": 0, "robo_97": 0, "below_threshold": 0}
+    select_count = 0
+    if not args.no_keywords and winners:
         print(f"\n=== Step 4: Writing tiered keywords ===")
         if args.dry_run:
-            tier_counts = {"robo_99": 0, "robo_98": 0, "robo_97": 0, "below_threshold": 0}
             qualifying_bursts = set()
             for w in winners:
                 kw = get_tier_keyword(w['confidence_select'])
@@ -457,7 +590,6 @@ def main():
                 else:
                     tier_counts["below_threshold"] += 1
             select_count = sum(len(bursts[b]) for b in qualifying_bursts)
-            winner_written, select_written, errors = 0, 0, 0
             print("(dry run - no keywords written)")
         else:
             tier_counts, winner_written, select_written, errors = write_keywords(winners, bursts, args.nef_dir)
@@ -475,7 +607,7 @@ def main():
     print(f"Classified reject: {total - selects} ({100*(total-selects)/total:.1f}%)")
     print(f"Burst winners:     {len(winners)}")
 
-    if not args.no_keywords:
+    if not args.no_keywords and winners:
         print(f"\nKeyword tiers (from {len(winners)} winners):")
         print(f"  robo_99 (≥0.99): {tier_counts['robo_99']}")
         print(f"  robo_98 (≥0.98): {tier_counts['robo_98']}")
@@ -485,7 +617,8 @@ def main():
 
     print(f"\nOutput files:")
     print(f"  {results_csv}")
-    print(f"  {winners_csv}")
+    if winners:
+        print(f"  {winners_csv}")
 
     return 0
 
