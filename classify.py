@@ -157,15 +157,17 @@ def run_inference(classifier, image_files, batch_size=32, num_workers=4):
 def parse_burst_base(filename):
     """
     Extract base frame identifier from filename.
+    Only strips SHORT trailing number suffixes (1-2 digits) which indicate burst variants.
     Examples:
         2025-04-25-Z9_BLW0124.jpg -> 2025-04-25-Z9_BLW0124
         2025-04-25-Z9_BLW0124-3.jpg -> 2025-04-25-Z9_BLW0124
         2025-04-25-Z9_BLW0124-3-2.jpg -> 2025-04-25-Z9_BLW0124
+        2026-01-31-PCA-Sebring-023573.jpg -> 2026-01-31-PCA-Sebring-023573 (keeps long numbers)
     """
     stem = Path(filename).stem
-    # Remove trailing -N suffixes (burst variants)
-    # Pattern: base name possibly followed by one or more -digit suffixes
-    match = re.match(r'^(.+?)(-\d+)*$', stem)
+    # Remove trailing -N suffixes where N is 1-2 digits (burst variants like -2, -3)
+    # Don't strip longer numbers (like -023573) which are likely sequence numbers
+    match = re.match(r'^(.+?)(-\d{1,2})*$', stem)
     if match:
         return match.group(1)
     return stem
@@ -202,18 +204,22 @@ def burst_dedup(results):
 
 def get_tier_keyword(confidence):
     """Return tier keyword based on confidence, or None if below threshold."""
-    if confidence >= 0.99:
-        return "robo_99"
-    elif confidence >= 0.98:
-        return "robo_98"
-    elif confidence >= 0.97:
-        return "robo_97"
+    # Tiers from 90-99 (each 1% increment)
+    for threshold in range(99, 89, -1):  # 99, 98, 97, ... 90
+        if confidence >= threshold / 100.0:
+            return f"robo_{threshold}"
     return None
 
 
 def write_xmp_sidecar(target_path, keyword):
     """Write XMP sidecar with tiered keyword (for RAW files)."""
     xmp_path = target_path.with_suffix(".xmp")
+
+    # Determine hierarchy based on keyword type
+    if keyword.startswith('robo_'):
+        hierarchy = f"AI keywords|robo|{keyword}"
+    else:  # select
+        hierarchy = f"AI keywords|{keyword}"
 
     xmp_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:lr="http://ns.adobe.com/lightroom/1.0/">
@@ -226,7 +232,7 @@ def write_xmp_sidecar(target_path, keyword):
       </dc:subject>
       <lr:hierarchicalSubject>
         <rdf:Bag>
-          <rdf:li>robo|{keyword}</rdf:li>
+          <rdf:li>{hierarchy}</rdf:li>
         </rdf:Bag>
       </lr:hierarchicalSubject>
     </rdf:Description>
@@ -241,6 +247,12 @@ def write_xmp_sidecar(target_path, keyword):
 
 def embed_keyword_in_jpeg(jpeg_path, keyword):
     """Embed keyword directly into JPEG using exiftool."""
+    # Determine hierarchy based on keyword type
+    if keyword.startswith('robo_'):
+        hierarchy = f"AI keywords|robo|{keyword}"
+    else:  # select
+        hierarchy = f"AI keywords|{keyword}"
+
     try:
         result = subprocess.run(
             [
@@ -248,7 +260,7 @@ def embed_keyword_in_jpeg(jpeg_path, keyword):
                 '-overwrite_original',
                 f'-Keywords+={keyword}',
                 f'-Subject+={keyword}',
-                f'-HierarchicalSubject+=robo|{keyword}',
+                f'-HierarchicalSubject+={hierarchy}',
                 str(jpeg_path)
             ],
             capture_output=True,
@@ -290,15 +302,16 @@ def write_keyword_to_file(target_path, keyword, nef_dir=None):
 def write_keywords(winners, bursts, nef_dir=None):
     """
     Write tiered keywords to winner images and 'select' to all burst siblings.
-    - Winners >= 0.97 get robo_97/98/99 keyword
-    - All frames in bursts with a winner >= 0.97 get 'select' keyword
+    - Winners >= 0.90 get robo_90 through robo_99 keyword (1% increments)
+    - All frames in bursts with a winner >= 0.90 get 'select' keyword
 
     Args:
         winners: list of winner results (best frame per burst)
         bursts: dict mapping burst base to list of all frames
         nef_dir: optional directory for NEF files (writes XMP sidecars there)
     """
-    tier_counts = {"robo_99": 0, "robo_98": 0, "robo_97": 0, "below_threshold": 0}
+    tier_counts = {f"robo_{i}": 0 for i in range(90, 100)}
+    tier_counts["below_threshold"] = 0
     winner_written = 0
     select_written = 0
     errors = 0
@@ -340,12 +353,14 @@ def write_keywords(winners, bursts, nef_dir=None):
 # =============================================================================
 
 def find_images(input_dir):
-    """Find all image files in directory."""
+    """Find all image files in directory and subdirectories."""
     input_dir = Path(input_dir)
     image_files = []
     for ext in ['*.jpg', '*.JPG', '*.jpeg', '*.JPEG', '*.png', '*.PNG']:
-        image_files.extend(input_dir.glob(ext))
-    return sorted(image_files)
+        # Use rglob to recursively search subdirectories
+        image_files.extend(input_dir.rglob(ext))
+    # Remove duplicates (Windows glob is case-insensitive)
+    return sorted(list(set(image_files)))
 
 
 def main():
@@ -447,7 +462,8 @@ def main():
     if not args.no_keywords:
         print(f"\n=== Step 4: Writing tiered keywords ===")
         if args.dry_run:
-            tier_counts = {"robo_99": 0, "robo_98": 0, "robo_97": 0, "below_threshold": 0}
+            tier_counts = {f"robo_{i}": 0 for i in range(90, 100)}
+            tier_counts["below_threshold"] = 0
             qualifying_bursts = set()
             for w in winners:
                 kw = get_tier_keyword(w['confidence_select'])
@@ -477,9 +493,11 @@ def main():
 
     if not args.no_keywords:
         print(f"\nKeyword tiers (from {len(winners)} winners):")
-        print(f"  robo_99 (≥0.99): {tier_counts['robo_99']}")
-        print(f"  robo_98 (≥0.98): {tier_counts['robo_98']}")
-        print(f"  robo_97 (≥0.97): {tier_counts['robo_97']}")
+        for threshold in range(99, 89, -1):  # 99 down to 90
+            key = f"robo_{threshold}"
+            count = tier_counts.get(key, 0)
+            if count > 0:  # Only show tiers with results
+                print(f"  {key} (>=0.{threshold}): {count}")
         print(f"  Below threshold: {tier_counts['below_threshold']}")
         print(f"\nBurst siblings tagged 'select': {select_count}")
 
