@@ -46,8 +46,7 @@ python classify.py /path/to/images
 ```bash
 # In .venv
 pip install torch torchvision scikit-learn pillow
-brew install exiftool      # for JPEG keyword embedding
-brew install imagemagick   # for NEF preview extraction (optional)
+brew install exiftool      # Required: for JPEG embedding and RAW preview extraction
 ```
 
 ## Key Details
@@ -56,10 +55,14 @@ brew install imagemagick   # for NEF preview extraction (optional)
 - **Input size**: 224x224
 - **Device**: Auto-detects MPS (Apple Silicon), CUDA, or CPU
 - **Class imbalance**: ~3% interesting, handled via weighted CrossEntropyLoss
-- **Burst detection**: Groups by filename stem (e.g., `BLW0124-3.jpg` → `BLW0124`)
+- **RAW Support**: NEF, CR2, CR3, ARW, ORF, RAF, DNG, RW2 via exiftool preview extraction
+- **Burst detection**:
+  - Filename-based (default): Groups by stem (e.g., `BLW0124-3.jpg` → `BLW0124`)
+  - Time-based (optional): Groups by capture time with `--burst_threshold` flag
 - **Keywords**:
-  - `robo_99`, `robo_98`, `robo_97` for tiered confidence winners
+  - `robo_90` through `robo_99` for tiered confidence winners (1% increments)
   - `select` for all frames in qualifying bursts
+  - Hierarchical structure: `AI keywords|robo|{keyword}` for Lightroom organization
   - Embedded in JPEGs via exiftool; XMP sidecars for RAW files
 
 ## Output

@@ -1,5 +1,15 @@
 # TODO
 
+## Recent Updates (Feb 2026)
+
+### ✅ Merged Features
+- [x] RAW file support (NEF, CR2, ARW, etc.) with automatic preview extraction
+- [x] Time-based burst grouping (optional `--burst_threshold` flag)
+- [x] Hierarchical keywords (`AI keywords|robo|{keyword}`) for better Lightroom organization
+- [x] Expanded confidence tiers (robo_90 through robo_99 instead of just 97-99)
+- [x] Recursive subdirectory search
+- [x] Optimized RAW preview extraction using exiftool stay_open mode
+
 ## PRIORITY 1: Before Sebring (Target: 2-3 weeks)
 
 ### Week 1: Setup & Data Preparation
@@ -14,7 +24,8 @@
   - [ ] Install Python 3.11+ (check: `python3 --version`)
   - [ ] Create venv: `python3 -m venv venv && source venv/bin/activate`
   - [ ] Install PyTorch (with MPS for Apple Silicon: `pip install torch torchvision`)
-  - [ ] Install dependencies: `pip install scikit-learn pillow imagemagick`
+  - [ ] Install dependencies: `pip install scikit-learn pillow`
+  - [ ] Install exiftool: `brew install exiftool` (required for RAW support)
   - [ ] Verify: `python3 -c "import torch; print(torch.__version__)"`
 
 - [ ] **Data Preparation**
@@ -132,7 +143,8 @@
 
 ## Backlog (Not Scheduled)
 
-- [ ] More sophisticated XMP sidecar format (currently simple but functional)
+- [x] ~~More sophisticated XMP sidecar format~~ - Now uses exiftool (preserves metadata)
+- [x] ~~RAW file support~~ - Completed with automatic preview extraction
 - [ ] Confidence score histogram/analysis tool
 - [ ] Training visualization (loss curves, confusion matrix)
 - [ ] Batch processing GUI (if needed for non-technical team members)
