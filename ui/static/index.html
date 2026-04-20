@@ -63,10 +63,74 @@
   </div>
 </section>
 
+<!-- ============= SCREEN 2a: Thresholds (tier tuning) ============= -->
+<section id="screen-threshold" class="screen" hidden>
+  <div class="toolbar">
+    <button id="threshold-back">← Run</button>
+    <span id="threshold-summary"></span>
+    <button id="threshold-continue">Continue to grid →</button>
+  </div>
+
+  <div class="threshold-controls">
+    <div class="slider-row">
+      <label>
+        <span>Auto-select threshold</span>
+        <input type="range" id="high-slider" min="0.50" max="1.00" step="0.01" value="0.95" />
+        <span id="high-val" class="slider-val">0.95</span>
+      </label>
+      <label>
+        <span>Review cutoff (low)</span>
+        <input type="range" id="low-slider" min="0.50" max="1.00" step="0.01" value="0.85" />
+        <span id="low-val" class="slider-val">0.85</span>
+      </label>
+    </div>
+
+    <div class="stats-row">
+      <span class="stat auto">Auto: <strong id="st-auto">—</strong></span>
+      <span class="stat review">Review: <strong id="st-review">—</strong></span>
+      <span class="stat below">Below: <strong id="st-below">—</strong></span>
+      <span class="stat">Bursts: <strong id="st-total">—</strong></span>
+      <span id="tier-chips" class="tier-chips"></span>
+    </div>
+
+    <div class="histogram-wrap">
+      <canvas id="histogram"></canvas>
+      <div class="hist-axis">
+        <span>0.50</span><span>0.60</span><span>0.70</span>
+        <span>0.80</span><span>0.90</span><span>1.00</span>
+      </div>
+    </div>
+
+    <div class="write-row">
+      <label class="checkbox">
+        <input type="checkbox" id="clear-first" checked />
+        Clear existing robo tags before writing (safe re-run)
+      </label>
+      <button id="dry-run-btn">Dry run</button>
+      <button id="write-btn" class="primary">Write keywords</button>
+      <span id="write-status" class="write-status"></span>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <span id="threshold-grid-count"></span>
+    <label>
+      Showing:
+      <select id="threshold-filter">
+        <option value="range">In [low, high]</option>
+        <option value="above_low">All ≥ low</option>
+        <option value="all">All winners</option>
+      </select>
+    </label>
+  </div>
+  <div id="threshold-grid"></div>
+</section>
+
 <!-- ============= SCREEN 2: Grid ============= -->
 <section id="screen-grid" class="screen" hidden>
   <div class="toolbar">
     <button id="back-to-run">← Run</button>
+    <button id="back-to-threshold" hidden>← Thresholds</button>
     <span id="grid-count"></span>
     <label>
       Show:

@@ -479,6 +479,59 @@ def write_keyword_to_file(target_path, keyword, nef_dir=None):
             return embed_keyword_in_jpeg(target, keyword)
 
 
+def clear_robo_keywords(target_path, nef_dir=None):
+    """
+    Remove any previously-written 'select' + 'robo_9x' tags from a file
+    (or its XMP sidecar). Called before re-writing keywords so tier changes
+    after threshold tuning don't leave stale tags behind.
+
+    Handles both the old (`robo|robo_9x`) and new (`AI keywords|robo|robo_9x`)
+    hierarchical subject formats.
+    """
+    source_path = Path(target_path)
+    stem = source_path.stem
+
+    if nef_dir:
+        nef_dir_path = Path(nef_dir)
+        target = nef_dir_path / f"{stem}.NEF"
+        if not target.exists():
+            target = nef_dir_path / f"{stem}.nef"
+        if not target.exists():
+            return False
+        target_file = target.with_suffix('.xmp')
+        if not target_file.exists():
+            return True  # nothing to clear
+    elif source_path.suffix.lower() in RAW_EXTENSIONS:
+        target_file = source_path.with_suffix('.xmp')
+        if not target_file.exists():
+            return True
+    else:
+        target_file = source_path
+
+    tags = ['select'] + [f'robo_{i}' for i in range(90, 100)]
+    args = ['exiftool', '-overwrite_original']
+    for t in tags:
+        args += [f'-Keywords-={t}', f'-Subject-={t}']
+    for t in tags:
+        if t == 'select':
+            args += [
+                '-HierarchicalSubject-=AI keywords|select',
+                '-HierarchicalSubject-=robo|select',
+            ]
+        else:
+            args += [
+                f'-HierarchicalSubject-=AI keywords|robo|{t}',
+                f'-HierarchicalSubject-=robo|{t}',
+            ]
+    args.append(str(target_file))
+
+    try:
+        result = subprocess.run(args, capture_output=True, text=True)
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
 def write_keywords(winners, bursts, nef_dir=None):
     """
     Write tiered keywords to winner images and 'select' to all burst siblings.

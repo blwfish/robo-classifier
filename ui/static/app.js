@@ -15,9 +15,10 @@ const state = {
 
 // ====== Screen management ======
 const screens = {
-  run:    document.getElementById("screen-run"),
-  grid:   document.getElementById("screen-grid"),
-  detail: document.getElementById("screen-detail"),
+  run:       document.getElementById("screen-run"),
+  threshold: document.getElementById("screen-threshold"),
+  grid:      document.getElementById("screen-grid"),
+  detail:    document.getElementById("screen-detail"),
 };
 function showScreen(name) {
   for (const [k, el] of Object.entries(screens)) el.hidden = k !== name;
@@ -89,8 +90,21 @@ async function init() {
   document.getElementById("browser-use").addEventListener("click", browserUseCurrent);
   document.getElementById("browser-close").addEventListener("click", closeBrowser);
 
+  // Thresholds
+  document.getElementById("threshold-back").addEventListener("click", () => showScreen("run"));
+  document.getElementById("threshold-continue").addEventListener("click", () => {
+    showScreen("grid");
+    renderGrid();
+  });
+  document.getElementById("high-slider").addEventListener("input", onThresholdChange);
+  document.getElementById("low-slider").addEventListener("input", onThresholdChange);
+  document.getElementById("threshold-filter").addEventListener("change", renderThresholdGrid);
+  document.getElementById("dry-run-btn").addEventListener("click", () => runWriteKeywords(true));
+  document.getElementById("write-btn").addEventListener("click", () => runWriteKeywords(false));
+
   // Grid
   document.getElementById("back-to-run").addEventListener("click", () => showScreen("run"));
+  document.getElementById("back-to-threshold").addEventListener("click", () => showScreen("threshold"));
   document.getElementById("grid-filter").addEventListener("change", renderGrid);
   document.getElementById("grid-sort").addEventListener("change", renderGrid);
 
@@ -305,6 +319,14 @@ async function openSession() {
   const data = await api(`/api/session?input_dir=${encodeURIComponent(state.inputDir)}`);
   state.images = data.images;
   state.inputDir = data.input_dir;
+
+  // If classification has run (results.csv present), land on Thresholds first
+  // so the user can tune before committing keywords. The Threshold screen has
+  // a "Continue to grid" button for label/crop review afterwards.
+  if (data.has_results) {
+    await enterThresholdScreen();
+    return;
+  }
   showScreen("grid");
   renderGrid();
 }
@@ -675,5 +697,258 @@ function onKey(ev) {
     case "Escape": showScreen("grid"); break;
   }
 }
+
+// ====== Thresholds screen ======
+// Mirrors the recovered review.py: two sliders, live histogram, tier chips,
+// filtered thumb grid, write-keywords button with clear-first for safe re-runs.
+
+const thresholdState = {
+  high: 0.95,
+  low: 0.85,
+  winners: [],   // subset of state.images where is_winner == true
+  drawTimer: null,
+};
+
+async function enterThresholdScreen() {
+  // openSession() has already populated state.images. Filter down to winners
+  // with confidence data (the set the tier threshold applies to).
+  thresholdState.winners = state.images.filter(
+    i => i.is_winner && i.confidence_select != null
+  );
+
+  document.getElementById("threshold-summary").textContent =
+    `${state.images.length} images · ${thresholdState.winners.length} burst winners`;
+
+  // Seed slider values from persisted state if we have any.
+  const savedHigh = parseFloat(localStorage.getItem("robo.high") || "");
+  const savedLow  = parseFloat(localStorage.getItem("robo.low")  || "");
+  thresholdState.high = Number.isFinite(savedHigh) ? savedHigh : 0.95;
+  thresholdState.low  = Number.isFinite(savedLow)  ? savedLow  : 0.85;
+  document.getElementById("high-slider").value = thresholdState.high;
+  document.getElementById("low-slider").value  = thresholdState.low;
+  document.getElementById("high-val").textContent = thresholdState.high.toFixed(2);
+  document.getElementById("low-val").textContent  = thresholdState.low.toFixed(2);
+
+  showScreen("threshold");
+  document.getElementById("back-to-threshold").hidden = false;  // make it visible on grid too
+  refreshThresholdView();
+}
+
+function onThresholdChange(ev) {
+  const el = ev.target;
+  if (el.id === "high-slider") {
+    thresholdState.high = parseFloat(el.value);
+    if (thresholdState.high <= thresholdState.low) {
+      thresholdState.low = Math.max(0.50, thresholdState.high - 0.01);
+      document.getElementById("low-slider").value = thresholdState.low;
+      document.getElementById("low-val").textContent = thresholdState.low.toFixed(2);
+    }
+  } else {
+    thresholdState.low = parseFloat(el.value);
+    if (thresholdState.low >= thresholdState.high) {
+      thresholdState.high = Math.min(1.00, thresholdState.low + 0.01);
+      document.getElementById("high-slider").value = thresholdState.high;
+      document.getElementById("high-val").textContent = thresholdState.high.toFixed(2);
+    }
+  }
+  document.getElementById("high-val").textContent = thresholdState.high.toFixed(2);
+  document.getElementById("low-val").textContent  = thresholdState.low.toFixed(2);
+  localStorage.setItem("robo.high", String(thresholdState.high));
+  localStorage.setItem("robo.low",  String(thresholdState.low));
+  refreshThresholdView();
+}
+
+// Coalesce the (potentially expensive) grid redraw onto the next frame so
+// dragging the slider feels responsive.
+function refreshThresholdView() {
+  updateThresholdStats();
+  drawHistogram();
+  if (thresholdState.drawTimer) cancelAnimationFrame(thresholdState.drawTimer);
+  thresholdState.drawTimer = requestAnimationFrame(renderThresholdGrid);
+}
+
+function updateThresholdStats() {
+  const { high, low, winners } = thresholdState;
+  let nAuto = 0, nReview = 0, nBelow = 0;
+  const tierCounts = {};
+  for (const w of winners) {
+    const c = w.confidence_select;
+    if (c >= high) nAuto++;
+    else if (c >= low) nReview++;
+    else nBelow++;
+    if (c >= low && c >= 0.90) {
+      // Tier keywords only start at 0.90 (see classify.get_tier_keyword).
+      const tier = Math.min(99, Math.floor(c * 100));
+      const key = `robo_${tier}`;
+      tierCounts[key] = (tierCounts[key] || 0) + 1;
+    }
+  }
+  document.getElementById("st-auto").textContent   = nAuto;
+  document.getElementById("st-review").textContent = nReview;
+  document.getElementById("st-below").textContent  = nBelow;
+  document.getElementById("st-total").textContent  = winners.length;
+
+  const chipsEl = document.getElementById("tier-chips");
+  chipsEl.innerHTML = "";
+  for (const [k, v] of Object.entries(tierCounts).sort().reverse()) {
+    const chip = document.createElement("span");
+    chip.className = "tier-chip";
+    chip.textContent = `${k}: ${v}`;
+    chipsEl.appendChild(chip);
+  }
+}
+
+function drawHistogram() {
+  const canvas = document.getElementById("histogram");
+  const wrap = canvas.parentElement;
+  const dpr = window.devicePixelRatio || 1;
+  const W = wrap.clientWidth - 16;
+  const H = 80;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+
+  const N_BINS = 50;  // 0.50 → 1.00 at 0.01 per bin
+  const bins = new Array(N_BINS).fill(0);
+  for (const w of thresholdState.winners) {
+    const c = w.confidence_select;
+    if (c < 0.50 || c > 1.00) continue;
+    const idx = Math.min(N_BINS - 1, Math.floor((c - 0.50) * 100));
+    bins[idx]++;
+  }
+  const maxVal = Math.max(...bins, 1);
+  const barW = W / N_BINS;
+  const { high, low } = thresholdState;
+
+  for (let i = 0; i < N_BINS; i++) {
+    const conf = 0.50 + (i + 0.5) / 100;
+    const hPx = Math.ceil((bins[i] / maxVal) * (H - 4));
+    const x = i * barW;
+    const y = H - hPx;
+    ctx.fillStyle = confColor(conf, low, high);
+    ctx.fillRect(x + 0.5, y, Math.max(barW - 1, 1), hPx);
+  }
+
+  // Dashed threshold lines
+  function drawLine(threshold, color, label) {
+    const x = Math.round(((threshold - 0.50) / 0.50) * W);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x, 0); ctx.lineTo(x, H);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = color;
+    ctx.font = "10px system-ui";
+    const lw = ctx.measureText(label).width;
+    ctx.fillText(label, Math.min(x + 3, W - lw - 2), 10);
+  }
+  drawLine(low,  "hsl(220,80%,65%)", `low ${low.toFixed(2)}`);
+  drawLine(high, "hsl(10,80%,65%)",  `high ${high.toFixed(2)}`);
+}
+
+function confColor(conf, low, high) {
+  if (conf < low) return "hsl(230,25%,30%)";
+  const t = (conf - low) / (1.0 - low);
+  const hue = Math.round(240 * (1 - t));
+  const lit = conf >= high ? 48 : 58;
+  return `hsl(${hue},85%,${lit}%)`;
+}
+
+function renderThresholdGrid() {
+  const filter = document.getElementById("threshold-filter").value;
+  const { high, low, winners } = thresholdState;
+  let visible = winners;
+  if (filter === "range")     visible = winners.filter(w => w.confidence_select >= low && w.confidence_select < high);
+  else if (filter === "above_low") visible = winners.filter(w => w.confidence_select >= low);
+  // sort by confidence desc
+  visible = visible.slice().sort((a, b) => b.confidence_select - a.confidence_select);
+
+  document.getElementById("threshold-grid-count").textContent =
+    `${visible.length} of ${winners.length} winners shown`;
+
+  const grid = document.getElementById("threshold-grid");
+  grid.innerHTML = "";
+  // Cap to something sensible — the DOM doesn't love 10k tiles.
+  const CAP = 500;
+  for (const img of visible.slice(0, CAP)) {
+    const tile = document.createElement("div");
+    tile.className = "tile";
+    tile.style.borderColor = confColor(img.confidence_select, low, high);
+    tile.style.borderWidth = "2px";
+    tile.style.borderStyle = "solid";
+    tile.addEventListener("click", () => {
+      // Jump to the detail view for this image. Match filteredImages to winners
+      // so ←/→ navigation on detail walks the winner set.
+      state.filteredImages = winners.slice().sort((a, b) => b.confidence_select - a.confidence_select);
+      state.currentIndex = state.filteredImages.findIndex(x => x.filename === img.filename);
+      showScreen("detail");
+      renderDetail();
+    });
+    const src = `/api/thumb?input_dir=${encodeURIComponent(state.inputDir)}&filename=${encodeURIComponent(img.filename)}`;
+    tile.innerHTML = `
+      <img loading="lazy" src="${src}" alt="" />
+      <div class="meta">
+        <span>${img.filename}</span>
+        <span class="conf">${img.confidence_select.toFixed(3)}</span>
+      </div>
+    `;
+    grid.appendChild(tile);
+  }
+  if (visible.length > CAP) {
+    const note = document.createElement("div");
+    note.style.gridColumn = "1 / -1";
+    note.style.color = "var(--fg-dim)";
+    note.style.padding = "8px";
+    note.textContent = `Showing first ${CAP} of ${visible.length}. Tighten filters to see more targeted results.`;
+    grid.appendChild(note);
+  }
+}
+
+async function runWriteKeywords(dryRun) {
+  const statusEl = document.getElementById("write-status");
+  const { low, high } = thresholdState;
+  if (!dryRun) {
+    const nAuto = document.getElementById("st-auto").textContent;
+    const nReview = document.getElementById("st-review").textContent;
+    if (!confirm(
+      `Write keywords for ${nAuto} auto + ${nReview} review winners?\n` +
+      `  low=${low.toFixed(2)}  high=${high.toFixed(2)}`
+    )) return;
+  }
+  statusEl.className = "write-status run";
+  statusEl.textContent = dryRun ? "Running dry run…" : "Writing keywords…";
+  document.getElementById("write-btn").disabled = true;
+  document.getElementById("dry-run-btn").disabled = true;
+  try {
+    const body = {
+      input_dir: state.inputDir,
+      low: thresholdState.low,
+      dry_run: dryRun,
+      clear_first: document.getElementById("clear-first").checked,
+    };
+    const data = await apiPost("/api/write_keywords", body);
+    const tiers = Object.entries(data.tier_counts || {})
+      .sort().reverse().map(([k, v]) => `${k}:${v}`).join(" ");
+    const prefix = dryRun ? "[dry run] " : "";
+    statusEl.className = "write-status ok";
+    statusEl.textContent = `${prefix}${data.n_tagged} tier keywords, ${data.n_select} select tags${tiers ? " — " + tiers : ""}`;
+  } catch (e) {
+    statusEl.className = "write-status err";
+    statusEl.textContent = `Error: ${e.message}`;
+  } finally {
+    document.getElementById("write-btn").disabled = false;
+    document.getElementById("dry-run-btn").disabled = false;
+  }
+}
+
+window.addEventListener("resize", () => {
+  if (!screens.threshold.hidden) drawHistogram();
+});
 
 init();

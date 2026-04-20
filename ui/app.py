@@ -389,6 +389,102 @@ def clear_crop(req: LabelRequest):
     return {"ok": True}
 
 
+class WriteKeywordsRequest(BaseModel):
+    input_dir: str
+    low: float = 0.90  # only winners with confidence_select >= low get tagged
+    dry_run: bool = False
+    clear_first: bool = True  # clear stale robo_*/select tags before writing
+    nef_dir: str | None = None
+
+
+@app.post("/api/write_keywords")
+def write_keywords_endpoint(req: WriteKeywordsRequest):
+    """
+    Write tier + select keywords to XMP/JPEG based on a user-tuned threshold.
+    Reads results.csv for per-image classifications and reconstructs the bursts
+    so we can re-tag select-siblings consistently.
+    """
+    from classify import (
+        burst_dedup, clear_robo_keywords, get_capture_times,
+        get_tier_keyword, write_keywords as _write_keywords,
+    )
+
+    d = _resolve_input_dir(req.input_dir)
+    results = _load_results_csv(d)
+    if not results:
+        raise HTTPException(400, "No results.csv found — run the pipeline first.")
+
+    # Rebuild bursts + winners the same way classify does (filename-based; the
+    # time-based grouping only runs when the pipeline is invoked with
+    # burst_threshold). That matches what's already in winners.csv.
+    for r in results:
+        r['confidence_select'] = float(r['confidence_select'])
+        r['confidence_reject'] = float(r.get('confidence_reject', 0.0))
+    winners_all, bursts = burst_dedup(results)
+
+    selected = [w for w in winners_all if w['confidence_select'] >= req.low]
+    if not selected:
+        raise HTTPException(400, f"No winners at or above low={req.low:.2f}")
+
+    # Dry run: just compute what WOULD happen.
+    if req.dry_run:
+        path_to_burst = {
+            frame['path']: bk for bk, frames in bursts.items() for frame in frames
+        }
+        qualifying_bursts = set()
+        tier_counts = {f"robo_{i}": 0 for i in range(90, 100)}
+        tier_counts["below_threshold"] = 0
+        for w in selected:
+            kw = get_tier_keyword(w['confidence_select'])
+            if kw:
+                tier_counts[kw] += 1
+                bk = path_to_burst.get(w['path'])
+                if bk:
+                    qualifying_bursts.add(bk)
+            else:
+                tier_counts["below_threshold"] += 1
+        select_count = sum(len(bursts[b]) for b in qualifying_bursts)
+        return {
+            "ok": True,
+            "dry_run": True,
+            "n_tagged": sum(v for k, v in tier_counts.items() if k.startswith("robo_")),
+            "n_select": select_count,
+            "errors": 0,
+            "tier_counts": {k: v for k, v in tier_counts.items() if v > 0},
+        }
+
+    # Real write: optionally clear stale keywords from the universe of files
+    # we might touch (all winners + all burst siblings of qualifying bursts).
+    if req.clear_first:
+        to_clear: set[str] = set()
+        path_to_burst = {
+            frame['path']: bk for bk, frames in bursts.items() for frame in frames
+        }
+        for w in selected:
+            kw = get_tier_keyword(w['confidence_select'])
+            if kw is None:
+                continue
+            to_clear.add(w['path'])
+            bk = path_to_burst.get(w['path'])
+            if bk:
+                for frame in bursts[bk]:
+                    to_clear.add(frame['path'])
+        for path in to_clear:
+            clear_robo_keywords(path, req.nef_dir)
+
+    tier_counts, winner_written, select_written, errors = _write_keywords(
+        selected, bursts, req.nef_dir,
+    )
+    return {
+        "ok": True,
+        "dry_run": False,
+        "n_tagged": winner_written,
+        "n_select": select_written,
+        "errors": errors,
+        "tier_counts": {k: v for k, v in tier_counts.items() if v > 0},
+    }
+
+
 @app.post("/api/junk")
 def move_to_junk(req: JunkMoveRequest):
     d = _resolve_input_dir(req.input_dir)
