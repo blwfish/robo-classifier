@@ -646,7 +646,10 @@ def run_pipeline(
     junk_min_visible_frac=0.1,
     junk_min_area_frac=0.002,
     junk_edge_min_area_frac=0.05,
+    junk_batch_size=32,
+    junk_imgsz=640,
     preview_workers=None,
+    max_preview_edge=512,
     pregen_thumbs=False,
     progress_cb=None,
 ):
@@ -689,6 +692,7 @@ def run_pipeline(
                          "message": f"Extracting RAW previews ({pw} workers)"})
             preview_map = extract_raw_previews(
                 raw_files, preview_dir, workers=pw,
+                max_preview_edge=max_preview_edge,
                 progress_cb=lambda c, t: progress_cb(
                     {"type": "progress", "stage": "previews", "current": c, "total": t}
                 ),
@@ -709,6 +713,8 @@ def run_pipeline(
                 min_visible_frac=junk_min_visible_frac,
                 min_area_frac=junk_min_area_frac,
                 edge_min_area_frac=junk_edge_min_area_frac,
+                batch_size=junk_batch_size,
+                imgsz=junk_imgsz,
                 preview_map=preview_map if preview_map else None,
                 progress_cb=lambda c, t: progress_cb(
                     {"type": "progress", "stage": "junk", "current": c, "total": t}
@@ -889,16 +895,48 @@ def main():
         help="Directory containing NEF files (writes XMP sidecars there instead of embedding in JPEGs)"
     )
     parser.add_argument(
+        "--preset",
+        default=None,
+        help="Hardware-tuning preset name (resolves to presets/<name>.toml). "
+             "Explicit CLI flags still override individual values. "
+             "See presets/CUSTOM.md for details."
+    )
+    parser.add_argument(
         "--batch_size",
         type=int,
-        default=32,
-        help="Batch size for inference (default: 32)"
+        default=None,
+        help="Classifier batch size (default: 32; preset may override)"
     )
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=4,
-        help="Number of data loader workers (default: 4)"
+        default=None,
+        help="Classifier DataLoader workers (default: 4; preset may override)"
+    )
+    parser.add_argument(
+        "--preview_workers",
+        type=int,
+        default=None,
+        help="Parallel RAW preview extract workers (default: cpu_count-2)"
+    )
+    parser.add_argument(
+        "--max_preview_edge",
+        type=int,
+        default=None,
+        help="Downsample extracted previews to this many px on longest edge "
+             "(default: 512; pass 0 to disable)"
+    )
+    parser.add_argument(
+        "--junk_batch_size",
+        type=int,
+        default=None,
+        help="YOLO batch size for junk filter (default: 32)"
+    )
+    parser.add_argument(
+        "--junk_imgsz",
+        type=int,
+        default=None,
+        help="YOLO input image size (default: 640)"
     )
     parser.add_argument(
         "--no_keywords",
@@ -939,32 +977,60 @@ def main():
     parser.add_argument(
         "--junk_min_conf",
         type=float,
-        default=0.3,
-        help="YOLO detection confidence threshold (default: 0.3)"
+        default=None,
+        help="YOLO detection confidence threshold (default: 0.3; preset may override)"
     )
     parser.add_argument(
         "--junk_min_visible_frac",
         type=float,
-        default=0.1,
+        default=None,
         help="Edge-touching vehicle 'chopped' if visible dim < this fraction "
-             "of image dim (default: 0.1)"
+             "of image dim (default: 0.1; preset may override)"
     )
     parser.add_argument(
         "--junk_min_area_frac",
         type=float,
-        default=0.002,
+        default=None,
         help="Ignore vehicles smaller than this fraction of image area "
-             "(default: 0.002)"
+             "(default: 0.002; preset may override)"
     )
     parser.add_argument(
         "--junk_edge_min_area_frac",
         type=float,
-        default=0.05,
+        default=None,
         help="Edge-touching vehicles must be at least this fraction of image "
-             "area to be considered usable (default: 0.05)"
+             "area to be considered usable (default: 0.05; preset may override)"
     )
 
     args = parser.parse_args()
+
+    # Collect all preset-tunable CLI values. None = not specified on the CLI.
+    explicit = {
+        "batch_size":             args.batch_size,
+        "num_workers":            args.num_workers,
+        "preview_workers":        args.preview_workers,
+        "max_preview_edge":       args.max_preview_edge,
+        "junk_batch_size":        args.junk_batch_size,
+        "junk_imgsz":             args.junk_imgsz,
+        "junk_min_conf":          args.junk_min_conf,
+        "junk_min_visible_frac":  args.junk_min_visible_frac,
+        "junk_min_area_frac":     args.junk_min_area_frac,
+        "junk_edge_min_area_frac": args.junk_edge_min_area_frac,
+    }
+
+    # Apply preset if specified; explicit CLI values override preset values.
+    if args.preset:
+        try:
+            from presets_loader import load_preset, merge_preset_and_overrides
+            preset_kwargs = load_preset(args.preset)
+            print(f"Using preset '{args.preset}': "
+                  f"{', '.join(f'{k}={v}' for k, v in preset_kwargs.items())}")
+            tunable = merge_preset_and_overrides(preset_kwargs, explicit)
+        except FileNotFoundError as e:
+            print(f"ERROR: {e}")
+            return 1
+    else:
+        tunable = {k: v for k, v in explicit.items() if v is not None}
 
     try:
         summary = run_pipeline(
@@ -973,18 +1039,13 @@ def main():
             profile=args.profile,
             output_dir=args.output_dir,
             nef_dir=args.nef_dir,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
             no_keywords=args.no_keywords,
             dry_run=args.dry_run,
             burst_threshold=args.burst_threshold,
             skip_junk_filter=args.skip_junk_filter,
             junk_dir_name=args.junk_dir_name,
             yolo_model=args.yolo_model,
-            junk_min_conf=args.junk_min_conf,
-            junk_min_visible_frac=args.junk_min_visible_frac,
-            junk_min_area_frac=args.junk_min_area_frac,
-            junk_edge_min_area_frac=args.junk_edge_min_area_frac,
+            **tunable,
         )
     except RuntimeError as e:
         print(f"ERROR: {e}")

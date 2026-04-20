@@ -1,0 +1,21 @@
+description = "Windows + nVidia GPU desktop, typical fast-SSD setup"
+# CUDA is ~3-5x faster than MPS at YOLO, so bigger batches pay off and we can
+# afford larger previews for more detection accuracy. If your source drive is
+# slower, bump extract.workers down. If you have two robo-cams running into
+# one processing pass, leave these defaults.
+
+[extract]
+workers = 8            # tune to min(cpu_count-2, disk_read_parallelism_sweet_spot)
+max_preview_edge = 1024 # CUDA can chew bigger previews cheaply; better detection
+
+[junk_filter]
+batch_size = 64        # nVidia GPUs love larger batches
+imgsz = 640
+min_conf = 0.30
+min_visible_frac = 0.10
+min_area_frac = 0.002
+edge_min_area_frac = 0.05
+
+[classifier]
+batch_size = 64
+num_workers = 8        # more CPU threads feeding a hungrier GPU

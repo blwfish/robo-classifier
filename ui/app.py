@@ -53,6 +53,7 @@ class RunRequest(BaseModel):
     input_dir: str
     profile: str | None = None
     model: str = "model.pt"
+    preset: str | None = None   # hardware-tuning preset name
     skip_junk_filter: bool = False
     burst_threshold: float | None = None
     no_keywords: bool = False
@@ -179,6 +180,13 @@ def list_dir(path: str = ""):
     }
 
 
+@app.get("/api/presets")
+def get_presets():
+    """List hardware-tuning presets available in presets/."""
+    from presets_loader import list_presets
+    return {"presets": list_presets()}
+
+
 @app.get("/api/profiles")
 def list_profiles():
     """List available model profiles (models/*.pt with optional .json sidecar)."""
@@ -223,6 +231,14 @@ def run_pipeline(req: RunRequest):
         "no_keywords": req.no_keywords,
         "dry_run": req.dry_run,
     }
+    # Merge in tuning preset if one was selected (UI has no inline overrides
+    # beyond the fields above, so preset values flow straight through).
+    if req.preset:
+        try:
+            from presets_loader import load_preset
+            options.update(load_preset(req.preset))
+        except FileNotFoundError as e:
+            raise HTTPException(400, str(e))
     job = pipeline_runner.MANAGER.create(str(input_dir), options)
     pipeline_runner.MANAGER.start(job)
     return {"job_id": job.id}

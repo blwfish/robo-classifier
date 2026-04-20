@@ -76,6 +76,29 @@ async function init() {
     }
   }
 
+  // Load tuning presets
+  const { presets } = await api("/api/presets");
+  const presetSelect = document.getElementById("preset");
+  presetSelect.innerHTML = "";
+  const noneOpt = document.createElement("option");
+  noneOpt.value = "";
+  noneOpt.textContent = "(code defaults)";
+  presetSelect.appendChild(noneOpt);
+  for (const p of presets) {
+    const opt = document.createElement("option");
+    opt.value = p.name;
+    opt.textContent = p.description ? `${p.name} — ${p.description}` : p.name;
+    presetSelect.appendChild(opt);
+  }
+  // Remember the last-picked preset across sessions.
+  const savedPreset = localStorage.getItem("robo.preset") || "";
+  if ([...presetSelect.options].some(o => o.value === savedPreset)) {
+    presetSelect.value = savedPreset;
+  }
+  presetSelect.addEventListener("change", () => {
+    localStorage.setItem("robo.preset", presetSelect.value);
+  });
+
   // Restore last-used directory if any
   const lastDir = localStorage.getItem("robo.lastInputDir");
   if (lastDir) document.getElementById("input_dir").value = lastDir;
@@ -211,9 +234,11 @@ async function onRun(ev) {
   document.getElementById("progress-stage").textContent = "Starting…";
 
   try {
+    const preset = document.getElementById("preset").value || null;
     const { job_id } = await apiPost("/api/run", {
       input_dir: inputDir,
       profile,
+      preset,
       skip_junk_filter: skip,
       burst_threshold: burst,
       dry_run: dry,
