@@ -91,14 +91,22 @@ def _is_edge_chopped(
     img_h: int,
     edge_margin_px: float,
     min_visible_frac: float,
+    edge_min_area_frac: float = 0.0,
 ) -> bool:
     """
-    A detection is "edge-chopped" if it touches an image edge AND the visible
-    bbox is smaller than min_visible_frac of the image along the affected axis.
+    A detection is "edge-chopped" (i.e. unusable) if it touches an image edge
+    AND any of:
+      - visible width is below `min_visible_frac` of image width (on L/R edges)
+      - visible height is below `min_visible_frac` of image height (on T/B edges)
+      - total visible area is below `edge_min_area_frac` of image area
+
+    The area rule catches "slivers" that pass the width/height gate because
+    they're elongated along the edge but still represent only a fragment of a
+    vehicle (e.g. a car leaning out of the frame at the side).
     """
-    touches_left = det.x1 <= edge_margin_px
-    touches_right = det.x2 >= img_w - edge_margin_px
-    touches_top = det.y1 <= edge_margin_px
+    touches_left   = det.x1 <= edge_margin_px
+    touches_right  = det.x2 >= img_w - edge_margin_px
+    touches_top    = det.y1 <= edge_margin_px
     touches_bottom = det.y2 >= img_h - edge_margin_px
 
     if not (touches_left or touches_right or touches_top or touches_bottom):
@@ -107,6 +115,8 @@ def _is_edge_chopped(
     if (touches_left or touches_right) and det.width < min_visible_frac * img_w:
         return True
     if (touches_top or touches_bottom) and det.height < min_visible_frac * img_h:
+        return True
+    if edge_min_area_frac > 0 and det.area < edge_min_area_frac * img_w * img_h:
         return True
 
     return False
@@ -132,6 +142,7 @@ def detect_junk(
     edge_margin_px: float = 5.0,
     min_visible_frac: float = 0.1,
     min_area_frac: float = 0.002,
+    edge_min_area_frac: float = 0.05,
     batch_size: int = 16,
     imgsz: int = 640,
     progress_cb=None,
@@ -197,7 +208,8 @@ def detect_junk(
 
                 detections.append(det)
 
-                if not _is_edge_chopped(det, img_w, img_h, edge_margin_px, min_visible_frac):
+                if not _is_edge_chopped(det, img_w, img_h, edge_margin_px,
+                                        min_visible_frac, edge_min_area_frac):
                     usable.append(det)
 
             if not detections:
@@ -432,6 +444,14 @@ def main():
              "(default: 0.002, filters distant traffic)",
     )
     parser.add_argument(
+        "--edge_min_area_frac",
+        type=float,
+        default=0.05,
+        help="Edge-touching vehicles must be at least this fraction of image "
+             "area to count as 'usable' (default: 0.05). Catches slivers that "
+             "pass the width/height gate but are clearly chopped fragments.",
+    )
+    parser.add_argument(
         "--batch_size",
         type=int,
         default=16,
@@ -466,6 +486,7 @@ def main():
         edge_margin_px=args.edge_margin_px,
         min_visible_frac=args.min_visible_frac,
         min_area_frac=args.min_area_frac,
+        edge_min_area_frac=args.edge_min_area_frac,
         batch_size=args.batch_size,
     )
 

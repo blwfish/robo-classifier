@@ -645,6 +645,7 @@ def run_pipeline(
     junk_min_conf=0.3,
     junk_min_visible_frac=0.1,
     junk_min_area_frac=0.002,
+    junk_edge_min_area_frac=0.05,
     preview_workers=None,
     pregen_thumbs=False,
     progress_cb=None,
@@ -707,6 +708,7 @@ def run_pipeline(
                 min_conf=junk_min_conf,
                 min_visible_frac=junk_min_visible_frac,
                 min_area_frac=junk_min_area_frac,
+                edge_min_area_frac=junk_edge_min_area_frac,
                 preview_map=preview_map if preview_map else None,
                 progress_cb=lambda c, t: progress_cb(
                     {"type": "progress", "stage": "junk", "current": c, "total": t}
@@ -945,6 +947,13 @@ def main():
         help="Ignore vehicles smaller than this fraction of image area "
              "(default: 0.002)"
     )
+    parser.add_argument(
+        "--junk_edge_min_area_frac",
+        type=float,
+        default=0.05,
+        help="Edge-touching vehicles must be at least this fraction of image "
+             "area to be considered usable (default: 0.05)"
+    )
 
     args = parser.parse_args()
 
@@ -966,6 +975,7 @@ def main():
             junk_min_conf=args.junk_min_conf,
             junk_min_visible_frac=args.junk_min_visible_frac,
             junk_min_area_frac=args.junk_min_area_frac,
+            junk_edge_min_area_frac=args.junk_edge_min_area_frac,
         )
     except RuntimeError as e:
         print(f"ERROR: {e}")
