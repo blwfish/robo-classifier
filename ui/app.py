@@ -246,19 +246,19 @@ async def progress(job_id: str, request: Request):
                     # Drain any straggler then exit
                     while not job.events.empty():
                         ev = job.events.get_nowait()
-                        yield f"data: {json.dumps(ev)}\n\n"
+                        yield f"data: {json.dumps(ev, default=str)}\n\n"
                         if ev.get("type") == "__end__":
                             return
                     # Final status snapshot
-                    yield f"data: {json.dumps({'type': 'status', 'status': job.status, 'summary': job.summary, 'error': job.error})}\n\n"
+                    yield f"data: {json.dumps({'type': 'status', 'status': job.status, 'summary': job.summary, 'error': job.error}, default=str)}\n\n"
                     return
                 # Keep connection alive
                 yield ": heartbeat\n\n"
                 continue
             if event.get("type") == "__end__":
-                yield f"data: {json.dumps({'type': 'status', 'status': job.status, 'summary': job.summary, 'error': job.error})}\n\n"
+                yield f"data: {json.dumps({'type': 'status', 'status': job.status, 'summary': job.summary, 'error': job.error}, default=str)}\n\n"
                 return
-            yield f"data: {json.dumps(event)}\n\n"
+            yield f"data: {json.dumps(event, default=str)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

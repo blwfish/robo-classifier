@@ -844,7 +844,16 @@ def run_pipeline(
         "winners": len(winners),
         "tier_counts": tier_counts,
         "select_siblings": select_count,
-        "junk": junk_summary,
+        # Keep only the JSON-safe scalar counts — the full junk_summary contains
+        # Path/JunkResult objects that can't be serialized onto the SSE stream.
+        "junk": (
+            {
+                "by_reason": junk_summary.get("by_reason", {}),
+                "n_junk": len(junk_summary.get("junked", [])),
+                "n_kept": len(junk_summary.get("kept", [])),
+            }
+            if junk_summary else None
+        ),
         "results_csv": str(results_csv),
         "winners_csv": str(winners_csv) if winners else None,
     }
