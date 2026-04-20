@@ -56,7 +56,10 @@
   </form>
 
   <div id="progress-box" hidden>
-    <h3 id="progress-stage">Starting…</h3>
+    <h3 id="progress-stage-row">
+      <span id="progress-stage">Starting…</span>
+      <span id="progress-elapsed" class="elapsed">0.0s</span>
+    </h3>
     <progress id="progress-bar" value="0" max="1"></progress>
     <div id="progress-text"></div>
     <pre id="progress-log"></pre>

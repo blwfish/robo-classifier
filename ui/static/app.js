@@ -238,6 +238,29 @@ function streamProgress(jobId) {
   const LOG_FLUSH_MS = 150;
   let logBuffer = [];
   let logTimer = null;
+
+  // Timing: remember the job start and each stage's start so we can show
+  // both the wall-clock-since-start and the previous stage's duration.
+  const jobStartMs = Date.now();
+  let currentStage = null;
+  let currentStageStartMs = null;
+  const fmtElapsed = (ms) => {
+    const s = ms / 1000;
+    if (s < 60) return `${s.toFixed(1)}s`;
+    const m = Math.floor(s / 60);
+    const r = (s - m * 60).toFixed(1);
+    return `${m}m${r}s`;
+  };
+  const stamp = () => `[+${fmtElapsed(Date.now() - jobStartMs)}]`;
+
+  // Live ticker: update the header with running elapsed so the user sees
+  // the clock move while a long stage is crunching.
+  const tickerEl = document.getElementById("progress-elapsed");
+  const headerTicker = setInterval(() => {
+    if (!tickerEl) return;
+    tickerEl.textContent = fmtElapsed(Date.now() - jobStartMs);
+  }, 250);
+
   const scheduleLogFlush = () => {
     if (logTimer) return;
     logTimer = setTimeout(() => {
@@ -268,12 +291,18 @@ function streamProgress(jobId) {
     try { event = JSON.parse(ev.data); } catch { return; }
 
     if (event.type === "stage") {
+      // Close out the previous stage with its duration.
+      if (currentStage !== null && currentStageStartMs !== null) {
+        const dur = Date.now() - currentStageStartMs;
+        logBuffer.push(`${stamp()} [${currentStage}] done in ${fmtElapsed(dur)}`);
+      }
+      currentStage = event.stage;
+      currentStageStartMs = Date.now();
       stageEl.textContent = event.message;
       barEl.value = 0;
       barEl.max = 1;
       textEl.textContent = "";
-      // Stage transitions are rare enough to log verbatim and immediately.
-      logBuffer.push(`[${event.stage}] ${event.message || ""}`);
+      logBuffer.push(`${stamp()} [${event.stage}] ${event.message || ""}`);
       scheduleLogFlush();
     } else if (event.type === "progress") {
       // Coalesce: only keep the latest progress update, render on next frame.
@@ -282,20 +311,27 @@ function streamProgress(jobId) {
       if (!wasPending) requestAnimationFrame(scheduleBarUpdate);
       // Log sparingly — every 10% or so.
       if (event.total > 0 && event.current % Math.max(1, Math.floor(event.total / 10)) === 0) {
-        logBuffer.push(`  ${event.stage}: ${event.current}/${event.total}`);
+        logBuffer.push(`${stamp()}   ${event.stage}: ${event.current}/${event.total}`);
         scheduleLogFlush();
       }
     } else if (event.type === "status") {
       es.close();
+      clearInterval(headerTicker);
       document.getElementById("run-btn").disabled = false;
+      // Close out the last stage.
+      if (currentStage !== null && currentStageStartMs !== null) {
+        const dur = Date.now() - currentStageStartMs;
+        logBuffer.push(`${stamp()} [${currentStage}] done in ${fmtElapsed(dur)}`);
+      }
+      const total = fmtElapsed(Date.now() - jobStartMs);
       if (event.status === "done") {
-        stageEl.textContent = "Done.";
-        logBuffer.push("done.");
+        stageEl.textContent = `Done in ${total}.`;
+        logBuffer.push(`${stamp()} pipeline complete (total ${total})`);
         scheduleLogFlush();
         openSession();
       } else {
-        stageEl.textContent = `Error: ${event.error || "unknown"}`;
-        logBuffer.push(`ERROR: ${event.error || "unknown"}`);
+        stageEl.textContent = `Error after ${total}: ${event.error || "unknown"}`;
+        logBuffer.push(`${stamp()} ERROR: ${event.error || "unknown"}`);
         scheduleLogFlush();
       }
     }
