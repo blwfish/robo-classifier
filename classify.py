@@ -32,134 +32,15 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
 from PIL import Image
 
-
-# =============================================================================
-# Constants
-# =============================================================================
-
-RAW_EXTENSIONS = {'.nef', '.cr2', '.cr3', '.arw', '.orf', '.raf', '.dng', '.rw2'}
-JPG_EXTENSIONS = {'.jpg', '.jpeg', '.png'}
-
-
-# =============================================================================
-# RAW Preview Extraction
-# =============================================================================
-
-class ExiftoolProcess:
-    """
-    Persistent exiftool process using -stay_open mode.
-    Avoids process spawn overhead for each file.
-
-    For binary output (like -b -PreviewImage), we read in chunks and look
-    for the ready marker since binary data doesn't have nice line endings.
-    """
-
-    def __init__(self):
-        self.process = None
-        self._seq = 0
-        self._start()
-
-    def _start(self):
-        """Start exiftool in stay_open mode."""
-        self.process = subprocess.Popen(
-            ['exiftool', '-stay_open', 'True', '-@', '-'],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        self._seq = 0
-
-    def execute(self, *args):
-        """
-        Execute an exiftool command and return stdout bytes.
-        Args are passed as command line arguments.
-        """
-        if self.process is None or self.process.poll() is not None:
-            self._start()
-
-        # Build command: each arg on its own line, terminated by -execute with sequence num
-        # The sequence number is appended to {ready} marker, e.g., {ready0}, {ready1}
-        cmd = '\n'.join(args) + f'\n-execute{self._seq}\n'
-        ready_marker = f'{{ready{self._seq}}}'.encode('utf-8')
-        self._seq += 1
-
-        self.process.stdin.write(cmd.encode('utf-8'))
-        self.process.stdin.flush()
-
-        # Read output in chunks, looking for the ready marker
-        # Binary data (like previews) won't have line endings, so we can't use readline()
-        output = b''
-        chunk_size = 65536  # 64KB chunks
-        while True:
-            import select
-            # Check if there's data available (with timeout)
-            readable, _, _ = select.select([self.process.stdout], [], [], 30)
-            if not readable:
-                break  # Timeout - something went wrong
-
-            chunk = self.process.stdout.read1(chunk_size) if hasattr(self.process.stdout, 'read1') else self.process.stdout.read(chunk_size)
-            if not chunk:
-                break
-            output += chunk
-
-            # Check if ready marker is at the end
-            if output.rstrip().endswith(ready_marker):
-                # Remove the marker and any trailing newline before it
-                output = output.rstrip()
-                if output.endswith(ready_marker):
-                    output = output[:-len(ready_marker)].rstrip()
-                break
-
-        return output
-
-    def close(self):
-        """Shutdown the exiftool process."""
-        if self.process and self.process.poll() is None:
-            self.process.stdin.write(b'-stay_open\nFalse\n')
-            self.process.stdin.flush()
-            self.process.wait()
-        self.process = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        self.close()
-
-
-def extract_raw_previews(raw_files, temp_dir):
-    """
-    Extract previews from all RAW files to temp directory.
-    Uses exiftool's -stay_open mode for efficiency.
-    Returns dict mapping original RAW path to preview path.
-    """
-    preview_map = {}
-    failed = []
-
-    print(f"Extracting previews from {len(raw_files)} RAW files...")
-
-    with ExiftoolProcess() as et:
-        for i, raw_path in enumerate(raw_files, 1):
-            preview_path = Path(temp_dir) / f"{raw_path.stem}_preview.jpg"
-
-            # Extract preview using persistent process
-            preview_data = et.execute('-b', '-PreviewImage', str(raw_path))
-
-            if preview_data:
-                with open(preview_path, 'wb') as f:
-                    f.write(preview_data)
-                preview_map[raw_path] = preview_path
-            else:
-                failed.append(raw_path)
-
-            if i % 100 == 0 or i == len(raw_files):
-                print(f"\r  Extracted {i}/{len(raw_files)} previews...", end="", flush=True)
-
-    print()
-    if failed:
-        print(f"  WARNING: Failed to extract {len(failed)} previews")
-
-    return preview_map
+from image_utils import (
+    RAW_EXTENSIONS,
+    JPG_EXTENSIONS,
+    ExiftoolProcess,
+    extract_raw_previews,
+    find_images,
+    check_exiftool,
+    default_workers,
+)
 
 
 # =============================================================================
@@ -228,7 +109,7 @@ class ImageDataset(Dataset):
 # Inference
 # =============================================================================
 
-def run_inference(classifier, image_files, batch_size=32, num_workers=4, original_paths=None):
+def run_inference(classifier, image_files, batch_size=32, num_workers=4, original_paths=None, progress_cb=None):
     """
     Run batched inference on image files.
 
@@ -298,6 +179,8 @@ def run_inference(classifier, image_files, batch_size=32, num_workers=4, origina
 
             processed += len(batch_indices)
             print(f"\r  Processed {processed}/{len(image_files)} images...", end="", flush=True)
+            if progress_cb is not None:
+                progress_cb(processed, len(image_files))
 
     print()
     return results
@@ -656,25 +539,262 @@ def write_keywords(winners, bursts, nef_dir=None):
 # Main Pipeline
 # =============================================================================
 
-def find_images(input_dir):
+MODELS_DIR = Path(__file__).parent / "models"
+
+
+def resolve_model(args_model, args_profile):
     """
-    Find all image files in directory.
-    Returns (jpg_files, raw_files) tuple.
+    Figure out which model .pt to load and return its path.
+
+    Resolution order:
+      1. --model <explicit path> wins if provided and exists.
+      2. --profile <name> → models/<name>.pt (prints sidecar JSON if present).
+      3. Default model.pt in CWD (legacy).
     """
+    if args_profile:
+        pt = MODELS_DIR / f"{args_profile}.pt"
+        if not pt.exists():
+            available = sorted(p.stem for p in MODELS_DIR.glob("*.pt")) if MODELS_DIR.exists() else []
+            raise SystemExit(
+                f"Profile '{args_profile}' not found at {pt}. "
+                f"Available: {available or '(none — put models in models/)'}"
+            )
+        sidecar = pt.with_suffix(".json")
+        if sidecar.exists():
+            try:
+                meta = json.loads(sidecar.read_text())
+                print(f"Profile '{args_profile}': {meta.get('description', '(no description)')}")
+            except Exception:
+                pass
+        return pt
+
+    return Path(args_model)
+
+
+def _noop_progress(event):
+    pass
+
+
+def run_pipeline(
+    input_dir,
+    model="model.pt",
+    profile=None,
+    output_dir=None,
+    nef_dir=None,
+    batch_size=32,
+    num_workers=4,
+    no_keywords=False,
+    dry_run=False,
+    burst_threshold=None,
+    skip_junk_filter=False,
+    junk_dir_name="junk",
+    yolo_model="yolov8n.pt",
+    junk_min_conf=0.3,
+    junk_min_visible_frac=0.1,
+    junk_min_area_frac=0.002,
+    preview_workers=None,
+    pregen_thumbs=False,
+    progress_cb=None,
+):
+    """
+    Run the full classification pipeline as a library call.
+
+    progress_cb(event) receives dicts like:
+      {"type": "stage", "stage": "junk"|"inference"|"dedup"|"keywords",
+       "message": str}
+      {"type": "progress", "stage": str, "current": int, "total": int}
+      {"type": "done", "summary": {...}}
+
+    Returns a summary dict with counts, winners, bursts, etc.
+    Raises on fatal errors (missing exiftool, missing model, no images).
+    """
+    if progress_cb is None:
+        progress_cb = _noop_progress
+
     input_dir = Path(input_dir)
-    jpg_files = []
-    raw_files = []
+    output_dir = Path(output_dir) if output_dir else input_dir
+    pw = preview_workers if preview_workers is not None else default_workers()
 
-    for f in input_dir.iterdir():
-        if not f.is_file():
-            continue
-        ext = f.suffix.lower()
-        if ext in JPG_EXTENSIONS:
-            jpg_files.append(f)
-        elif ext in RAW_EXTENSIONS:
-            raw_files.append(f)
+    if not check_exiftool():
+        raise RuntimeError("exiftool not found. Install with: brew install exiftool")
 
-    return sorted(jpg_files), sorted(raw_files)
+    model_path = resolve_model(model, profile)
+
+    # Find images up-front so we can extract previews once and share across stages.
+    jpg_files, raw_files = find_images(input_dir)
+    print(f"Found {len(jpg_files)} JPG/PNG and {len(raw_files)} RAW files")
+    if not jpg_files and not raw_files:
+        raise RuntimeError("No images found.")
+
+    # Single tempdir spans both junk filter and classification so we never
+    # extract RAW previews twice.
+    with tempfile.TemporaryDirectory() as preview_dir:
+        preview_map: dict = {}
+        if raw_files:
+            progress_cb({"type": "stage", "stage": "previews",
+                         "message": f"Extracting RAW previews ({pw} workers)"})
+            preview_map = extract_raw_previews(
+                raw_files, preview_dir, workers=pw,
+                progress_cb=lambda c, t: progress_cb(
+                    {"type": "progress", "stage": "previews", "current": c, "total": t}
+                ),
+            )
+
+        # Step 0: Junk filter (reuses the previews we just extracted)
+        junk_summary = None
+        if not skip_junk_filter:
+            print(f"\n=== Step 0: Junk filter (YOLO vehicle detection) ===")
+            progress_cb({"type": "stage", "stage": "junk", "message": "Junk filter"})
+            from junk_filter import filter_directory
+            junk_summary = filter_directory(
+                input_dir,
+                junk_dir_name=junk_dir_name,
+                model_path=yolo_model,
+                dry_run=dry_run,
+                min_conf=junk_min_conf,
+                min_visible_frac=junk_min_visible_frac,
+                min_area_frac=junk_min_area_frac,
+                preview_map=preview_map if preview_map else None,
+                progress_cb=lambda c, t: progress_cb(
+                    {"type": "progress", "stage": "junk", "current": c, "total": t}
+                ),
+            )
+            # Filter preview_map + file lists to survivors (junked files moved).
+            if not dry_run:
+                preview_map = {r: p for r, p in preview_map.items() if r.exists()}
+                jpg_files = [f for f in jpg_files if f.exists()]
+                raw_files = [f for f in raw_files if f.exists()]
+
+        total_files = len(jpg_files) + len(raw_files)
+        if total_files == 0:
+            raise RuntimeError("No images found after junk filter.")
+
+        # Step 2: Inference
+        print(f"\n=== Step 2: Running inference ===")
+        progress_cb({"type": "stage", "stage": "inference", "message": "Classifying"})
+        classifier = ImageClassifier(model_path)
+
+        results = []
+        n_total_for_progress = total_files
+        n_done = 0
+
+        def _inference_progress_adapter(current, total):
+            progress_cb({
+                "type": "progress",
+                "stage": "inference",
+                "current": n_done + current,
+                "total": n_total_for_progress,
+            })
+
+        if jpg_files:
+            jpg_results = run_inference(
+                classifier, jpg_files, batch_size, num_workers,
+                progress_cb=_inference_progress_adapter,
+            )
+            results.extend(jpg_results)
+            n_done += len(jpg_files)
+
+        if raw_files and preview_map:
+            preview_to_original = {v: k for k, v in preview_map.items()}
+            preview_files = list(preview_map.values())
+            raw_results = run_inference(
+                classifier, preview_files, batch_size, num_workers,
+                original_paths=preview_to_original,
+                progress_cb=_inference_progress_adapter,
+            )
+            results.extend(raw_results)
+
+        # Step 2b: Pregenerate UI thumbnails while previews are still on disk.
+        # (Runs inside the preview_dir context so preview files are still available.)
+        if pregen_thumbs and not dry_run and results:
+            print(f"\n=== Step 2b: Pregenerating thumbnails ({pw} workers) ===")
+            progress_cb({"type": "stage", "stage": "thumbs",
+                         "message": f"Pregenerating thumbs ({pw} workers)"})
+            from ui.thumbs import pregenerate_thumbs
+            sources = [Path(r['path']) for r in results]
+            pregenerate_thumbs(
+                input_dir, sources,
+                preview_map=preview_map,
+                workers=pw,
+                progress_cb=lambda c, t: progress_cb(
+                    {"type": "progress", "stage": "thumbs", "current": c, "total": t}
+                ),
+            )
+
+    if not results:
+        raise RuntimeError("No images could be processed.")
+
+    # Write results CSV
+    results_csv = output_dir / "results.csv"
+    if not dry_run:
+        print(f"\nWriting full results to {results_csv}")
+        with open(results_csv, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=results[0].keys())
+            writer.writeheader()
+            writer.writerows(results)
+
+    # Step 3: Burst dedup
+    print(f"\n=== Step 3: Burst deduplication ===")
+    progress_cb({"type": "stage", "stage": "dedup", "message": "Deduping bursts"})
+
+    capture_times = {}
+    if burst_threshold is not None and burst_threshold > 0:
+        all_paths = [Path(r['path']) for r in results]
+        capture_times = get_capture_times(all_paths)
+
+    winners, bursts = burst_dedup(results, capture_times, burst_threshold)
+    print(f"Reduced {len(results)} images to {len(winners)} burst winners")
+
+    winners_csv = output_dir / "winners.csv"
+    if not dry_run and winners:
+        with open(winners_csv, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=winners[0].keys())
+            writer.writeheader()
+            writer.writerows(winners)
+
+    # Step 4: Write keywords
+    tier_counts = {f"robo_{i}": 0 for i in range(90, 100)}
+    tier_counts["below_threshold"] = 0
+    select_count = 0
+    if not no_keywords and winners:
+        print(f"\n=== Step 4: Writing tiered keywords ===")
+        progress_cb({"type": "stage", "stage": "keywords", "message": "Writing keywords"})
+        if dry_run:
+            path_to_burst = {
+                frame['path']: burst_key
+                for burst_key, frames in bursts.items()
+                for frame in frames
+            }
+            qualifying_bursts = set()
+            for w in winners:
+                kw = get_tier_keyword(w['confidence_select'])
+                if kw:
+                    tier_counts[kw] += 1
+                    bk = path_to_burst.get(w['path'])
+                    if bk:
+                        qualifying_bursts.add(bk)
+                else:
+                    tier_counts["below_threshold"] += 1
+            select_count = sum(len(bursts[b]) for b in qualifying_bursts)
+        else:
+            tier_counts, _winner_written, select_written, _errors = write_keywords(
+                winners, bursts, nef_dir
+            )
+            select_count = select_written
+
+    summary = {
+        "input_dir": str(input_dir),
+        "total_images": len(results),
+        "selects": sum(1 for r in results if r['classification'] == 'select'),
+        "winners": len(winners),
+        "tier_counts": tier_counts,
+        "select_siblings": select_count,
+        "junk": junk_summary,
+        "results_csv": str(results_csv),
+        "winners_csv": str(winners_csv) if winners else None,
+    }
+    progress_cb({"type": "done", "summary": summary})
+    return summary
 
 
 def main():
@@ -689,6 +809,12 @@ def main():
         "--model",
         default="model.pt",
         help="Path to trained model (default: model.pt)"
+    )
+    parser.add_argument(
+        "--profile",
+        default=None,
+        help="Model profile name — resolves to models/<name>.pt. "
+             "Takes precedence over --model when specified."
     )
     parser.add_argument(
         "--output_dir",
@@ -730,151 +856,91 @@ def main():
              "Default: disabled (uses filename-based grouping)"
     )
 
+    # Junk filter options
+    parser.add_argument(
+        "--skip_junk_filter",
+        action="store_true",
+        help="Skip the YOLO-based junk filter step (no-car / chopped-car detection)"
+    )
+    parser.add_argument(
+        "--junk_dir_name",
+        default="junk",
+        help="Subfolder for junk frames (default: junk)"
+    )
+    parser.add_argument(
+        "--yolo_model",
+        default="yolov8n.pt",
+        help="YOLO weights (default: yolov8n.pt — auto-downloads on first use)"
+    )
+    parser.add_argument(
+        "--junk_min_conf",
+        type=float,
+        default=0.3,
+        help="YOLO detection confidence threshold (default: 0.3)"
+    )
+    parser.add_argument(
+        "--junk_min_visible_frac",
+        type=float,
+        default=0.1,
+        help="Edge-touching vehicle 'chopped' if visible dim < this fraction "
+             "of image dim (default: 0.1)"
+    )
+    parser.add_argument(
+        "--junk_min_area_frac",
+        type=float,
+        default=0.002,
+        help="Ignore vehicles smaller than this fraction of image area "
+             "(default: 0.002)"
+    )
+
     args = parser.parse_args()
 
-    input_dir = Path(args.input_dir)
-    output_dir = Path(args.output_dir) if args.output_dir else input_dir
-
-    # Check for exiftool (needed for RAW preview extraction and JPEG keyword embedding)
     try:
-        subprocess.run(['exiftool', '-ver'], capture_output=True, check=True)
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        print("ERROR: exiftool not found. Install with: brew install exiftool")
+        summary = run_pipeline(
+            input_dir=args.input_dir,
+            model=args.model,
+            profile=args.profile,
+            output_dir=args.output_dir,
+            nef_dir=args.nef_dir,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            no_keywords=args.no_keywords,
+            dry_run=args.dry_run,
+            burst_threshold=args.burst_threshold,
+            skip_junk_filter=args.skip_junk_filter,
+            junk_dir_name=args.junk_dir_name,
+            yolo_model=args.yolo_model,
+            junk_min_conf=args.junk_min_conf,
+            junk_min_visible_frac=args.junk_min_visible_frac,
+            junk_min_area_frac=args.junk_min_area_frac,
+        )
+    except RuntimeError as e:
+        print(f"ERROR: {e}")
         return 1
 
-    # Step 1: Find images
-    print(f"\n=== Step 1: Finding images in {input_dir} ===")
-    jpg_files, raw_files = find_images(input_dir)
-    total_files = len(jpg_files) + len(raw_files)
-    print(f"Found {len(jpg_files)} JPG/PNG files and {len(raw_files)} RAW files")
-
-    if total_files == 0:
-        print("No images found. Exiting.")
-        return 1
-
-    # Step 2: Run inference
-    print(f"\n=== Step 2: Running inference ===")
-    classifier = ImageClassifier(args.model)
-
-    results = []
-
-    # Process JPG files directly
-    if jpg_files:
-        jpg_results = run_inference(classifier, jpg_files, args.batch_size, args.num_workers)
-        results.extend(jpg_results)
-
-    # Process RAW files by extracting previews first
-    if raw_files:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Extract previews
-            preview_map = extract_raw_previews(raw_files, temp_dir)
-
-            if preview_map:
-                # Build reverse mapping: preview_path -> original_raw_path
-                preview_to_original = {v: k for k, v in preview_map.items()}
-                preview_files = list(preview_map.values())
-
-                # Run inference on previews
-                raw_results = run_inference(
-                    classifier, preview_files, args.batch_size, args.num_workers,
-                    original_paths=preview_to_original
-                )
-                results.extend(raw_results)
-
-    if not results:
-        print("\nNo images could be processed. Exiting.")
-        return 1
-
-    # Write full results CSV
-    results_csv = output_dir / "results.csv"
-    if not args.dry_run:
-        print(f"\nWriting full results to {results_csv}")
-        with open(results_csv, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=results[0].keys())
-            writer.writeheader()
-            writer.writerows(results)
-
-    # Step 3: Burst dedup
-    print(f"\n=== Step 3: Burst deduplication ===")
-
-    # Get capture times if time-based burst grouping requested
-    capture_times = {}
-    if args.burst_threshold is not None and args.burst_threshold > 0:
-        print(f"Using time-based burst grouping (threshold={args.burst_threshold}s)")
-        all_paths = [Path(r['path']) for r in results]
-        print(f"Extracting capture times from {len(all_paths)} images...")
-        capture_times = get_capture_times(all_paths)
-        print(f"  Got timestamps for {len(capture_times)} images")
-    else:
-        print("Using filename-based burst grouping")
-
-    winners, bursts = burst_dedup(results, capture_times, args.burst_threshold)
-    print(f"Reduced {len(results)} images to {len(winners)} burst winners (select only)")
-    print(f"  ({len(bursts)} unique bursts detected)")
-
-    # Write winners CSV
-    winners_csv = output_dir / "winners.csv"
-    if not args.dry_run and winners:
-        print(f"Writing winners to {winners_csv}")
-        with open(winners_csv, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=winners[0].keys())
-            writer.writeheader()
-            writer.writerows(winners)
-
-    # Step 4: Write keywords
-    tier_counts = {"robo_99": 0, "robo_98": 0, "robo_97": 0, "below_threshold": 0}
-    select_count = 0
-    if not args.no_keywords and winners:
-        print(f"\n=== Step 4: Writing tiered keywords ===")
-        if args.dry_run:
-            qualifying_bursts = set()
-            # Build reverse lookup: path -> burst_key
-            path_to_burst = {}
-            for burst_key, frames in bursts.items():
-                for frame in frames:
-                    path_to_burst[frame['path']] = burst_key
-
-            for w in winners:
-                kw = get_tier_keyword(w['confidence_select'])
-                if kw:
-                    tier_counts[kw] += 1
-                    burst_key = path_to_burst.get(w['path'])
-                    if burst_key:
-                        qualifying_bursts.add(burst_key)
-                else:
-                    tier_counts["below_threshold"] += 1
-            select_count = sum(len(bursts[b]) for b in qualifying_bursts)
-            print("(dry run - no keywords written)")
-        else:
-            tier_counts, winner_written, select_written, errors = write_keywords(winners, bursts, args.nef_dir)
-            select_count = select_written
-            print(f"Wrote {winner_written} robo_9x keywords, {select_written} select keywords ({errors} errors)")
-
-    # Summary
-    print(f"\n{'=' * 50}")
-    print("SUMMARY")
-    print('=' * 50)
-    total = len(results)
-    selects = sum(1 for r in results if r['classification'] == 'select')
+    total = summary['total_images']
+    selects = summary['selects']
+    print(f"\n{'=' * 50}\nSUMMARY\n{'=' * 50}")
     print(f"Total images:      {total}")
-    print(f"Classified select: {selects} ({100*selects/total:.1f}%)")
-    print(f"Classified reject: {total - selects} ({100*(total-selects)/total:.1f}%)")
-    print(f"Burst winners:     {len(winners)}")
+    if total:
+        print(f"Classified select: {selects} ({100*selects/total:.1f}%)")
+        print(f"Classified reject: {total - selects} ({100*(total-selects)/total:.1f}%)")
+    print(f"Burst winners:     {summary['winners']}")
 
-    if not args.no_keywords and winners:
-        print(f"\nKeyword tiers (from {len(winners)} winners):")
-        for threshold in range(99, 89, -1):  # 99 down to 90
+    tc = summary['tier_counts']
+    if summary['winners'] and not args.no_keywords:
+        print(f"\nKeyword tiers:")
+        for threshold in range(99, 89, -1):
             key = f"robo_{threshold}"
-            count = tier_counts.get(key, 0)
-            if count > 0:  # Only show tiers with results
-                print(f"  {key} (>=0.{threshold}): {count}")
-        print(f"  Below threshold: {tier_counts['below_threshold']}")
-        print(f"\nBurst siblings tagged 'select': {select_count}")
+            if tc.get(key, 0):
+                print(f"  {key} (>=0.{threshold}): {tc[key]}")
+        print(f"  Below threshold: {tc['below_threshold']}")
+        print(f"\nBurst siblings tagged 'select': {summary['select_siblings']}")
 
     print(f"\nOutput files:")
-    print(f"  {results_csv}")
-    if winners:
-        print(f"  {winners_csv}")
+    print(f"  {summary['results_csv']}")
+    if summary['winners_csv']:
+        print(f"  {summary['winners_csv']}")
 
     return 0
 

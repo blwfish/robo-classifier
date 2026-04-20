@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>robo-classifier</title>
+<link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+<header>
+  <h1>robo-classifier</h1>
+  <nav id="crumbs"></nav>
+</header>
+
+<!-- ============= SCREEN 1: Run ============= -->
+<section id="screen-run" class="screen">
+  <h2>Run pipeline</h2>
+  <form id="run-form">
+    <label>
+      Input directory
+      <input type="text" id="input_dir" placeholder="/path/to/shoot" required />
+    </label>
+    <label>
+      Model profile
+      <select id="profile"></select>
+    </label>
+    <label class="checkbox">
+      <input type="checkbox" id="run_junk_filter" checked />
+      Run junk filter (remove no-car / chopped-car frames)
+    </label>
+    <label>
+      Burst threshold (seconds, blank = filename-based)
+      <input type="number" id="burst_threshold" step="0.1" min="0" />
+    </label>
+    <label class="checkbox">
+      <input type="checkbox" id="dry_run" />
+      Dry run (no file changes)
+    </label>
+    <div class="row">
+      <button type="submit" id="run-btn">Go</button>
+      <button type="button" id="browse-existing-btn">Browse existing results</button>
+    </div>
+  </form>
+
+  <div id="progress-box" hidden>
+    <h3 id="progress-stage">Starting…</h3>
+    <progress id="progress-bar" value="0" max="1"></progress>
+    <div id="progress-text"></div>
+    <pre id="progress-log"></pre>
+  </div>
+</section>
+
+<!-- ============= SCREEN 2: Grid ============= -->
+<section id="screen-grid" class="screen" hidden>
+  <div class="toolbar">
+    <button id="back-to-run">← Run</button>
+    <span id="grid-count"></span>
+    <label>
+      Show:
+      <select id="grid-filter">
+        <option value="winners">Winners only</option>
+        <option value="all">All images</option>
+        <option value="selects">All "select" classifications</option>
+      </select>
+    </label>
+    <label>
+      Sort:
+      <select id="grid-sort">
+        <option value="confidence_desc">Confidence ↓</option>
+        <option value="filename">Filename</option>
+      </select>
+    </label>
+  </div>
+  <div id="grid"></div>
+</section>
+
+<!-- ============= SCREEN 3: Detail ============= -->
+<section id="screen-detail" class="screen" hidden>
+  <div class="toolbar">
+    <button id="back-to-grid">← Grid</button>
+    <span id="detail-filename"></span>
+    <span id="detail-info"></span>
+    <span class="kbd-hint">
+      <kbd>←</kbd><kbd>→</kbd> nav •
+      <kbd>1</kbd> green <kbd>2</kbd> yellow <kbd>3</kbd> red <kbd>0</kbd> clear •
+      <kbd>C</kbd> crop <kbd>Esc</kbd> cancel •
+      <kbd>X</kbd> junk
+    </span>
+  </div>
+  <div id="detail-stage">
+    <img id="detail-img" alt="" />
+    <div id="crop-overlay" hidden>
+      <div id="crop-rect"></div>
+    </div>
+  </div>
+  <div id="label-bar">
+    <button data-label="Green" class="label-btn green">Green (1)</button>
+    <button data-label="Yellow" class="label-btn yellow">Yellow (2)</button>
+    <button data-label="Red" class="label-btn red">Red (3)</button>
+    <button data-label="Blue" class="label-btn blue">Blue (4)</button>
+    <button data-label="Purple" class="label-btn purple">Purple (5)</button>
+    <button data-label="" class="label-btn clear">Clear (0)</button>
+    <span class="sep"></span>
+    <button id="crop-btn">Crop (C)</button>
+    <button id="crop-save" hidden>Save crop</button>
+    <button id="crop-cancel" hidden>Cancel</button>
+    <button id="crop-clear">Clear crop</button>
+    <span class="sep"></span>
+    <button id="junk-btn" class="danger">Move to junk (X)</button>
+  </div>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
