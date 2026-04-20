@@ -143,7 +143,7 @@ def detect_junk(
     min_visible_frac: float = 0.1,
     min_area_frac: float = 0.002,
     edge_min_area_frac: float = 0.05,
-    batch_size: int = 16,
+    batch_size: int = 32,
     imgsz: int = 640,
     progress_cb=None,
 ) -> list[JunkResult]:
@@ -454,8 +454,8 @@ def main():
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=16,
-        help="YOLO batch size (default: 16)",
+        default=32,
+        help="YOLO batch size (default: 32)",
     )
     parser.add_argument(
         "--device",

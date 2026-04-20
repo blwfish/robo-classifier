@@ -133,9 +133,17 @@ class ExiftoolProcess:
         self.close()
 
 
-def _extract_one_rawpy(raw_path, temp_dir):
+def _extract_one_rawpy(raw_path, temp_dir, max_edge=None):
     """
     Extract the embedded preview JPEG from one RAW file using rawpy/libraw.
+
+    If max_edge is set and the embedded preview is larger than that on its
+    longest edge, decode + downsample + re-encode before writing to disk.
+    Z9 NEFs (for example) embed full-resolution ~5MB previews that starve
+    downstream models on JPEG-decode time; a 2048px cap shrinks the file
+    ~18× and leaves plenty of detail for 640px (YOLO) and 224px (ResNet)
+    input sizes.
+
     Returns (raw_path, preview_path) on success or (raw_path, None) on failure.
     """
     import rawpy
@@ -147,8 +155,21 @@ def _extract_one_rawpy(raw_path, temp_dir):
             # Some formats embed a bitmap (BMP) preview; we'd need to encode it.
             # Uncommon for modern cameras; fall back caller-side.
             return raw_path, None
+
+        data = thumb.data
+        if max_edge is not None:
+            from PIL import Image, ImageOps
+            import io
+            img = Image.open(io.BytesIO(data))
+            if max(img.size) > max_edge:
+                img = ImageOps.exif_transpose(img)
+                img.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+                buf = io.BytesIO()
+                img.save(buf, "JPEG", quality=90, optimize=True)
+                data = buf.getvalue()
+
         with open(preview_path, 'wb') as f:
-            f.write(thumb.data)
+            f.write(data)
         return raw_path, preview_path
     except Exception:
         return raw_path, None
@@ -176,7 +197,8 @@ def _extract_one_exiftool_worker(chunk, temp_dir, done, lock, total, progress_cb
 
 
 def extract_raw_previews(raw_files, temp_dir, progress_label="Extracting previews",
-                         workers=1, progress_cb=None, use_rawpy=True):
+                         workers=1, progress_cb=None, use_rawpy=True,
+                         max_preview_edge=2048):
     """
     Extract embedded JPEG previews from RAW files into temp_dir.
 
@@ -191,6 +213,12 @@ def extract_raw_previews(raw_files, temp_dir, progress_label="Extracting preview
         workers: number of parallel worker threads (1 = serial)
         progress_cb: optional callable(current, total) for UI progress events
         use_rawpy: prefer rawpy when available (default True)
+        max_preview_edge: if set and backend is rawpy, downsample any preview
+            whose longest edge exceeds this, re-encoding at quality 90. Makes
+            downstream JPEG decode (YOLO, classifier, thumbnailer) an order
+            of magnitude faster on cameras that embed full-resolution
+            previews. Default 2048 (plenty for 640px YOLO + 224px ResNet).
+            Pass None to preserve original preview bytes.
 
     Returns:
         dict mapping original RAW path -> preview path
@@ -222,7 +250,10 @@ def extract_raw_previews(raw_files, temp_dir, progress_label="Extracting preview
         # rawpy: one file per task — libraw opens/closes per call, so there's
         # no persistent-handle benefit to chunking. Keep the pool simple.
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(_extract_one_rawpy, rp, temp_dir) for rp in raw_files]
+            futs = [
+                ex.submit(_extract_one_rawpy, rp, temp_dir, max_preview_edge)
+                for rp in raw_files
+            ]
             for fut in as_completed(futs):
                 raw_path, preview_path = fut.result()
                 with lock:
