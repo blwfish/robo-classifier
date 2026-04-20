@@ -198,7 +198,7 @@ def _extract_one_exiftool_worker(chunk, temp_dir, done, lock, total, progress_cb
 
 def extract_raw_previews(raw_files, temp_dir, progress_label="Extracting previews",
                          workers=1, progress_cb=None, use_rawpy=True,
-                         max_preview_edge=2048):
+                         max_preview_edge=512):
     """
     Extract embedded JPEG previews from RAW files into temp_dir.
 
@@ -217,8 +217,11 @@ def extract_raw_previews(raw_files, temp_dir, progress_label="Extracting preview
             whose longest edge exceeds this, re-encoding at quality 90. Makes
             downstream JPEG decode (YOLO, classifier, thumbnailer) an order
             of magnitude faster on cameras that embed full-resolution
-            previews. Default 2048 (plenty for 640px YOLO + 224px ResNet).
-            Pass None to preserve original preview bytes.
+            previews. Default 512 (sufficient for 640px YOLO, 224px ResNet,
+            and 512px UI thumbs; caller accepted that partially-clipped cars
+            may get more aggressively flagged at this size). Pass None to
+            preserve original preview bytes, or a larger value (e.g. 1024,
+            2048) for slower but more detection-conservative behavior.
 
     Returns:
         dict mapping original RAW path -> preview path
