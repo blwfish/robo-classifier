@@ -25,6 +25,21 @@ function showScreen(name) {
     state.inputDir ? `${state.inputDir}` : "";
 }
 
+// ====== Tiny toast ======
+let toastTimer = null;
+function flashToast(message, ms = 2000) {
+  let el = document.getElementById("toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "toast";
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.classList.add("visible");
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("visible"), ms);
+}
+
 // ====== API helpers ======
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -381,11 +396,17 @@ async function renderDetail() {
   // Preview-mode button visual state
   document.getElementById("crop-preview-btn").classList.toggle("active", state.cropPreview);
 
+  // Enable/disable crop-related buttons honestly based on whether a crop exists.
+  const hasCrop = !!img.crop;
+  document.getElementById("crop-preview-btn").disabled = !hasCrop && !state.cropPreview;
+  document.getElementById("crop-clear").disabled = !hasCrop;
+
   // Crop overlay state
   document.getElementById("crop-overlay").hidden = true;
   document.getElementById("crop-save").hidden = true;
   document.getElementById("crop-cancel").hidden = true;
   document.getElementById("crop-btn").hidden = false;
+  document.getElementById("crop-hint").hidden = true;
 }
 
 function navigateDetail(delta) {
@@ -433,8 +454,10 @@ function enterCropMode() {
   const overlay = document.getElementById("crop-overlay");
   overlay.hidden = false;
   document.getElementById("crop-save").hidden = false;
+  document.getElementById("crop-save").disabled = true;   // enabled once a rect is drawn
   document.getElementById("crop-cancel").hidden = false;
   document.getElementById("crop-btn").hidden = true;
+  document.getElementById("crop-hint").hidden = false;
 
   overlay.onmousedown = startCropDrag;
 }
@@ -449,6 +472,7 @@ function exitCropMode() {
   document.getElementById("crop-save").hidden = true;
   document.getElementById("crop-cancel").hidden = true;
   document.getElementById("crop-btn").hidden = false;
+  document.getElementById("crop-hint").hidden = true;
   document.getElementById("crop-rect").style.display = "none";
 }
 
@@ -462,9 +486,12 @@ function imageBounds() {
 
 function startCropDrag(ev) {
   const bounds = imageBounds();
-  const x = ev.clientX, y = ev.clientY;
-  if (x < bounds.left || x > bounds.right || y < bounds.top || y > bounds.bottom) return;
+  // Clamp start point to image bounds so clicks in letterbox still work —
+  // the drag will begin at the nearest image edge.
+  const x = Math.max(bounds.left, Math.min(bounds.right, ev.clientX));
+  const y = Math.max(bounds.top,  Math.min(bounds.bottom, ev.clientY));
   state.cropDrag = { startX: x, startY: y, bounds };
+  ev.preventDefault();
   document.addEventListener("mousemove", onCropDrag);
   document.addEventListener("mouseup", endCropDrag, { once: true });
 }
@@ -502,10 +529,18 @@ function onCropDrag(ev) {
 function endCropDrag() {
   document.removeEventListener("mousemove", onCropDrag);
   state.cropDrag = null;
+  // Enable the Save button now that a rect exists.
+  if (state.cropRect) {
+    document.getElementById("crop-save").disabled = false;
+    document.getElementById("crop-hint").hidden = true;
+  }
 }
 
 async function saveCrop() {
-  if (!state.cropRect) { exitCropMode(); return; }
+  if (!state.cropRect) {
+    flashToast("Drag a rectangle on the image first.");
+    return;
+  }
   const img = state.filteredImages[state.currentIndex];
   await apiPost("/api/crop", {
     input_dir: state.inputDir,
@@ -580,7 +615,7 @@ function toggleCropPreview() {
   const img = state.filteredImages[state.currentIndex];
   if (!img) return;
   if (!img.crop && !state.cropPreview) {
-    // Nothing to preview; silently no-op (could flash a toast later).
+    flashToast("No crop on this image yet — draw one with Crop (C) first.");
     return;
   }
   state.cropPreview = !state.cropPreview;
@@ -597,6 +632,10 @@ window.addEventListener("resize", () => {
 async function clearCrop() {
   const img = state.filteredImages[state.currentIndex];
   if (!img) return;
+  if (!img.crop) {
+    flashToast("No crop to clear.");
+    return;
+  }
   await apiPost("/api/crop/clear", {
     input_dir: state.inputDir,
     filename: img.filename,

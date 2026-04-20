@@ -305,6 +305,19 @@ kbd {
   pointer-events: none;
 }
 
+#crop-hint {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  padding: 10px 16px;
+  border-radius: 4px;
+  font-size: 13px;
+  pointer-events: none;
+}
+
 #label-bar {
   display: flex;
   gap: 8px;
@@ -329,3 +342,23 @@ kbd {
 
 #detail-info { color: var(--fg-dim); font-size: 12px; }
 #detail-filename { font-family: ui-monospace, monospace; font-size: 12px; }
+
+#toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: rgba(0, 0, 0, 0.85);
+  color: #fff;
+  padding: 10px 18px;
+  border-radius: 6px;
+  font-size: 13px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s, transform 0.15s;
+  z-index: 1000;
+}
+#toast.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
