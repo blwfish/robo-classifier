@@ -18,8 +18,21 @@
   <form id="run-form">
     <label>
       Input directory
-      <input type="text" id="input_dir" placeholder="/path/to/shoot" required />
+      <div class="input-row">
+        <input type="text" id="input_dir" placeholder="/path/to/shoot" required />
+        <button type="button" id="browse-btn">Browse…</button>
+      </div>
     </label>
+    <div id="browser" class="browser" hidden>
+      <div class="browser-header">
+        <button type="button" id="browser-up" title="Up one level">↑</button>
+        <span id="browser-path" class="browser-path"></span>
+        <span id="browser-stats" class="browser-stats"></span>
+        <button type="button" id="browser-use">Use this folder</button>
+        <button type="button" id="browser-close">Close</button>
+      </div>
+      <ul id="browser-list"></ul>
+    </div>
     <label>
       Model profile
       <select id="profile"></select>

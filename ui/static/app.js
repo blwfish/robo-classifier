@@ -60,9 +60,19 @@ async function init() {
     }
   }
 
+  // Restore last-used directory if any
+  const lastDir = localStorage.getItem("robo.lastInputDir");
+  if (lastDir) document.getElementById("input_dir").value = lastDir;
+
   // Run form
   document.getElementById("run-form").addEventListener("submit", onRun);
   document.getElementById("browse-existing-btn").addEventListener("click", onBrowseExisting);
+
+  // Folder browser
+  document.getElementById("browse-btn").addEventListener("click", openBrowser);
+  document.getElementById("browser-up").addEventListener("click", browserUp);
+  document.getElementById("browser-use").addEventListener("click", browserUseCurrent);
+  document.getElementById("browser-close").addEventListener("click", closeBrowser);
 
   // Grid
   document.getElementById("back-to-run").addEventListener("click", () => showScreen("run"));
@@ -86,6 +96,72 @@ async function init() {
   showScreen("run");
 }
 
+// ====== Folder browser ======
+// Server-side directory picker. The browser can't hand us real filesystem
+// paths (security), so we drive navigation via /api/ls.
+
+let browserCurrentPath = null;
+
+async function openBrowser() {
+  const panel = document.getElementById("browser");
+  panel.hidden = false;
+  // Seed from the input field if it looks like a path, otherwise server default.
+  const hint = document.getElementById("input_dir").value.trim();
+  await loadBrowserAt(hint || "");
+}
+
+function closeBrowser() {
+  document.getElementById("browser").hidden = true;
+}
+
+async function loadBrowserAt(path) {
+  let data;
+  try {
+    data = await api(`/api/ls?path=${encodeURIComponent(path)}`);
+  } catch (e) {
+    // If the path doesn't exist, fall back to server default (home).
+    try { data = await api(`/api/ls`); }
+    catch { alert(`Cannot list: ${e.message}`); return; }
+  }
+  browserCurrentPath = data.path;
+  document.getElementById("browser-path").textContent = data.path;
+  const stats = [];
+  if (data.raw_count) stats.push(`${data.raw_count} RAW`);
+  if (data.jpg_count) stats.push(`${data.jpg_count} JPG`);
+  document.getElementById("browser-stats").textContent = stats.join(" · ");
+
+  const list = document.getElementById("browser-list");
+  list.innerHTML = "";
+  if (data.dirs.length === 0) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "(no subdirectories)";
+    list.appendChild(li);
+  } else {
+    for (const d of data.dirs) {
+      const li = document.createElement("li");
+      li.innerHTML = `<span class="icon">📁</span><span>${d.name}</span>`;
+      li.addEventListener("click", () => loadBrowserAt(d.path));
+      list.appendChild(li);
+    }
+  }
+}
+
+async function browserUp() {
+  if (!browserCurrentPath) return;
+  // Let the server compute the parent so we don't have to deal with Windows
+  // separators etc. client-side — /api/ls returns `parent` in its response.
+  const data = await api(`/api/ls?path=${encodeURIComponent(browserCurrentPath)}`);
+  if (data.parent) await loadBrowserAt(data.parent);
+}
+
+function browserUseCurrent() {
+  if (!browserCurrentPath) return;
+  document.getElementById("input_dir").value = browserCurrentPath;
+  localStorage.setItem("robo.lastInputDir", browserCurrentPath);
+  closeBrowser();
+}
+
 // ====== Run pipeline ======
 async function onRun(ev) {
   ev.preventDefault();
@@ -98,6 +174,7 @@ async function onRun(ev) {
   const dry = document.getElementById("dry_run").checked;
 
   state.inputDir = inputDir;
+  localStorage.setItem("robo.lastInputDir", inputDir);
   document.getElementById("run-btn").disabled = true;
   document.getElementById("progress-box").hidden = false;
   document.getElementById("progress-log").textContent = "";
@@ -204,6 +281,7 @@ async function onBrowseExisting() {
   const inputDir = document.getElementById("input_dir").value.trim();
   if (!inputDir) return;
   state.inputDir = inputDir;
+  localStorage.setItem("robo.lastInputDir", inputDir);
   openSession();
 }
 

@@ -129,6 +129,56 @@ def index():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/api/ls")
+def list_dir(path: str = ""):
+    """
+    List subdirectories of `path` for the UI's folder picker.
+
+    Security: resolves to absolute path; no path traversal beyond what the
+    filesystem already enforces. This is a local-only tool (localhost bind),
+    so we don't restrict to any specific root — the user can navigate anywhere
+    they have read access to.
+    """
+    if not path:
+        p = Path.home()
+    else:
+        p = Path(path).expanduser()
+    try:
+        p = p.resolve()
+    except Exception:
+        raise HTTPException(400, f"bad path: {path}")
+    if not p.exists() or not p.is_dir():
+        raise HTTPException(404, f"not a directory: {p}")
+
+    dirs = []
+    jpg_here = raw_here = 0
+    try:
+        for entry in sorted(p.iterdir(), key=lambda x: x.name.lower()):
+            if entry.name.startswith('.'):
+                continue  # hide dot-dirs and dot-files
+            try:
+                if entry.is_dir():
+                    dirs.append({"name": entry.name, "path": str(entry)})
+                elif entry.is_file():
+                    ext = entry.suffix.lower()
+                    if ext in RAW_EXTENSIONS:
+                        raw_here += 1
+                    elif ext in JPG_EXTENSIONS:
+                        jpg_here += 1
+            except OSError:
+                continue  # permission denied etc.
+    except PermissionError:
+        raise HTTPException(403, f"permission denied: {p}")
+
+    return {
+        "path": str(p),
+        "parent": str(p.parent) if p.parent != p else None,
+        "dirs": dirs,
+        "jpg_count": jpg_here,
+        "raw_count": raw_here,
+    }
+
+
 @app.get("/api/profiles")
 def list_profiles():
     """List available model profiles (models/*.pt with optional .json sidecar)."""

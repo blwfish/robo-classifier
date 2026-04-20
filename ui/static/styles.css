@@ -77,6 +77,60 @@ header nav {
   display: flex;
   gap: 10px;
 }
+.input-row {
+  display: flex;
+  gap: 8px;
+}
+.input-row input { flex: 1; }
+
+.browser {
+  max-width: 720px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.browser-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}
+.browser-path {
+  flex: 1;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg);
+}
+.browser-stats {
+  font-size: 11px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+#browser-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow: auto;
+}
+#browser-list li {
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+#browser-list li:hover { background: var(--panel-2); }
+#browser-list li .icon { color: var(--fg-dim); width: 14px; }
+#browser-list li.empty { color: var(--fg-dim); cursor: default; font-style: italic; }
+#browser-list li.empty:hover { background: transparent; }
 
 button {
   background: var(--panel-2);
