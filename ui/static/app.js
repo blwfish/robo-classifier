@@ -10,6 +10,7 @@ const state = {
   cropMode: false,
   cropRect: null,    // {l,t,r,b} in normalized (0-1) coords on the shown image
   cropDrag: null,    // {startX, startY} during drag
+  cropPreview: false, // when true, detail view shows just the cropped region
 };
 
 // ====== Screen management ======
@@ -76,6 +77,7 @@ async function init() {
   document.getElementById("crop-btn").addEventListener("click", enterCropMode);
   document.getElementById("crop-save").addEventListener("click", saveCrop);
   document.getElementById("crop-cancel").addEventListener("click", exitCropMode);
+  document.getElementById("crop-preview-btn").addEventListener("click", toggleCropPreview);
   document.getElementById("crop-clear").addEventListener("click", clearCrop);
   document.getElementById("junk-btn").addEventListener("click", junkCurrent);
 
@@ -266,7 +268,12 @@ async function renderDetail() {
   const img = state.filteredImages[state.currentIndex];
   if (!img) return;
   const imgEl = document.getElementById("detail-img");
-  imgEl.src = `/api/image?input_dir=${encodeURIComponent(state.inputDir)}&filename=${encodeURIComponent(img.filename)}`;
+  const newSrc = `/api/image?input_dir=${encodeURIComponent(state.inputDir)}&filename=${encodeURIComponent(img.filename)}`;
+  // Reset any previous transform so the new image starts in a clean state.
+  resetImgTransform();
+  imgEl.src = newSrc;
+  // Once the image has loaded, apply preview transform if requested.
+  imgEl.onload = () => applyCropPreviewIfActive();
 
   document.getElementById("detail-filename").textContent = img.filename;
   document.getElementById("detail-info").textContent =
@@ -281,6 +288,8 @@ async function renderDetail() {
       img.label = s.label;
       img.crop = s.crop;
       img._stateLoaded = true;
+      // State might now include a crop — reapply preview if it's active.
+      applyCropPreviewIfActive();
     } catch {
       /* ignore — leave nulls */
     }
@@ -290,6 +299,9 @@ async function renderDetail() {
   for (const btn of document.querySelectorAll(".label-btn")) {
     btn.classList.toggle("active", btn.dataset.label === (img.label || ""));
   }
+
+  // Preview-mode button visual state
+  document.getElementById("crop-preview-btn").classList.toggle("active", state.cropPreview);
 
   // Crop overlay state
   document.getElementById("crop-overlay").hidden = true;
@@ -303,6 +315,8 @@ function navigateDetail(delta) {
   if (n === 0) return;
   state.currentIndex = (state.currentIndex + delta + n) % n;
   if (state.cropMode) exitCropMode();
+  // Preview mode carries across navigation — if the next image has a crop,
+  // the preview transform is re-applied in renderDetail. If not, it no-ops.
   renderDetail();
 }
 
@@ -423,10 +437,84 @@ async function saveCrop() {
     right: state.cropRect.r,
     bottom: state.cropRect.b,
   });
-  img.crop = { ...state.cropRect, angle: 0 };
+  img.crop = {
+    left:   state.cropRect.l,
+    top:    state.cropRect.t,
+    right:  state.cropRect.r,
+    bottom: state.cropRect.b,
+    angle:  0,
+  };
   exitCropMode();
   renderDetail();
 }
+
+// ====== Crop preview ======
+// Toggle between "whole image" and "zoomed to crop rect" view. Uses a CSS
+// transform on the <img> so we don't need a server round-trip for a rendered
+// crop — the XMP metadata is unchanged either way.
+
+function resetImgTransform() {
+  const imgEl = document.getElementById("detail-img");
+  imgEl.style.transform = "";
+  imgEl.style.maxWidth = "";
+  imgEl.style.maxHeight = "";
+  imgEl.style.width = "";
+  imgEl.style.height = "";
+}
+
+function applyCropPreviewIfActive() {
+  if (!state.cropPreview) { resetImgTransform(); return; }
+  const img = state.filteredImages[state.currentIndex];
+  const imgEl = document.getElementById("detail-img");
+  if (!img || !img.crop || !imgEl.naturalWidth) { resetImgTransform(); return; }
+
+  const crop = img.crop;
+  const stage = document.getElementById("detail-stage");
+  const natW = imgEl.naturalWidth, natH = imgEl.naturalHeight;
+  const cropWpx = (crop.right - crop.left) * natW;
+  const cropHpx = (crop.bottom - crop.top) * natH;
+  const stageW = stage.clientWidth, stageH = stage.clientHeight;
+
+  // Scale so the cropped region fits inside the stage, preserving aspect.
+  const scale = Math.min(stageW / cropWpx, stageH / cropHpx);
+  const dispW = cropWpx * scale;
+  const dispH = cropHpx * scale;
+
+  // Letterbox: center the cropped region inside the stage.
+  const offsetX = (stageW - dispW) / 2;
+  const offsetY = (stageH - dispH) / 2;
+
+  // Translate so the crop's top-left lands at (offsetX, offsetY), then scale.
+  const tx = offsetX - crop.left * natW * scale;
+  const ty = offsetY - crop.top  * natH * scale;
+
+  // Override the default object-fit:contain sizing so transform math starts
+  // from the image's natural pixel dimensions.
+  imgEl.style.maxWidth = "none";
+  imgEl.style.maxHeight = "none";
+  imgEl.style.width = natW + "px";
+  imgEl.style.height = natH + "px";
+  imgEl.style.transformOrigin = "0 0";
+  imgEl.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+}
+
+function toggleCropPreview() {
+  const img = state.filteredImages[state.currentIndex];
+  if (!img) return;
+  if (!img.crop && !state.cropPreview) {
+    // Nothing to preview; silently no-op (could flash a toast later).
+    return;
+  }
+  state.cropPreview = !state.cropPreview;
+  document.getElementById("crop-preview-btn").classList.toggle("active", state.cropPreview);
+  applyCropPreviewIfActive();
+}
+
+// Reapply preview transform on window resize so the letterboxing stays correct.
+window.addEventListener("resize", () => {
+  if (state.cropPreview) applyCropPreviewIfActive();
+});
+
 
 async function clearCrop() {
   const img = state.filteredImages[state.currentIndex];
@@ -437,6 +525,11 @@ async function clearCrop() {
     color: "",  // unused but matches LabelRequest shape
   });
   img.crop = null;
+  // Nothing to preview anymore — exit preview mode so the full image shows.
+  if (state.cropPreview) {
+    state.cropPreview = false;
+    resetImgTransform();
+  }
   renderDetail();
 }
 
@@ -460,6 +553,7 @@ function onKey(ev) {
     case "c": case "C":
       if (state.cropMode) saveCrop(); else enterCropMode();
       break;
+    case "p": case "P": toggleCropPreview(); break;
     case "x": case "X": junkCurrent(); break;
     case "Escape": showScreen("grid"); break;
   }

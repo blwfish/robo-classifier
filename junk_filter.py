@@ -33,6 +33,7 @@ from image_utils import (
     JPG_EXTENSIONS,
     find_images,
     extract_raw_previews,
+    default_workers,
 )
 
 
@@ -317,7 +318,7 @@ def filter_directory(
         if preview_map is None:
             tmp_context = tempfile.TemporaryDirectory()
             tmp_dir = tmp_context.name
-            preview_map = extract_raw_previews(raw_files, tmp_dir)
+            preview_map = extract_raw_previews(raw_files, tmp_dir, workers=default_workers())
         for raw_path, prev_path in preview_map.items():
             scan_paths.append(prev_path)
             scan_to_original[prev_path] = raw_path

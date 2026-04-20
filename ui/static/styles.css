@@ -267,5 +267,11 @@ kbd {
   margin: 0 4px;
 }
 
+#crop-preview-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
 #detail-info { color: var(--fg-dim); font-size: 12px; }
 #detail-filename { font-family: ui-monospace, monospace; font-size: 12px; }

@@ -18,6 +18,15 @@ RAW_EXTENSIONS = {'.nef', '.cr2', '.cr3', '.arw', '.orf', '.raf', '.dng', '.rw2'
 JPG_EXTENSIONS = {'.jpg', '.jpeg', '.png'}
 IMAGE_EXTENSIONS = RAW_EXTENSIONS | JPG_EXTENSIONS
 
+# rawpy (libraw bindings) is much faster than shelling out to exiftool for
+# preview extraction because it avoids subprocess/pipe overhead and its C code
+# releases the GIL, so threads actually parallelize.
+try:
+    import rawpy as _rawpy  # noqa: F401
+    HAS_RAWPY = True
+except ImportError:
+    HAS_RAWPY = False
+
 
 def default_workers():
     """Default worker count for parallelism: cpu_count - 2, clamped to >=2."""
@@ -124,22 +133,64 @@ class ExiftoolProcess:
         self.close()
 
 
-def extract_raw_previews(raw_files, temp_dir, progress_label="Extracting previews",
-                         workers=1, progress_cb=None):
+def _extract_one_rawpy(raw_path, temp_dir):
     """
-    Extract previews from RAW files to temp directory.
+    Extract the embedded preview JPEG from one RAW file using rawpy/libraw.
+    Returns (raw_path, preview_path) on success or (raw_path, None) on failure.
+    """
+    import rawpy
+    preview_path = Path(temp_dir) / f"{raw_path.stem}_preview.jpg"
+    try:
+        with rawpy.imread(str(raw_path)) as raw:
+            thumb = raw.extract_thumb()
+        if thumb.format != rawpy.ThumbFormat.JPEG:
+            # Some formats embed a bitmap (BMP) preview; we'd need to encode it.
+            # Uncommon for modern cameras; fall back caller-side.
+            return raw_path, None
+        with open(preview_path, 'wb') as f:
+            f.write(thumb.data)
+        return raw_path, preview_path
+    except Exception:
+        return raw_path, None
 
-    Uses exiftool's -stay_open mode. When workers > 1, spins up that many
-    ExiftoolProcess instances in parallel threads and splits the work.
-    exiftool itself is single-threaded per process but releases the GIL via
-    subprocess.Popen, so threads scale effectively.
+
+def _extract_one_exiftool_worker(chunk, temp_dir, done, lock, total, progress_cb):
+    """Serial exiftool worker for one chunk — used by fallback path only."""
+    local_map = {}
+    local_failed = []
+    with ExiftoolProcess() as et:
+        for raw_path in chunk:
+            preview_path = Path(temp_dir) / f"{raw_path.stem}_preview.jpg"
+            preview_data = et.execute('-b', '-PreviewImage', str(raw_path))
+            if preview_data:
+                with open(preview_path, 'wb') as f:
+                    f.write(preview_data)
+                local_map[raw_path] = preview_path
+            else:
+                local_failed.append(raw_path)
+            with lock:
+                done[0] += 1
+                if progress_cb is not None:
+                    progress_cb(done[0], total)
+    return local_map, local_failed
+
+
+def extract_raw_previews(raw_files, temp_dir, progress_label="Extracting previews",
+                         workers=1, progress_cb=None, use_rawpy=True):
+    """
+    Extract embedded JPEG previews from RAW files into temp_dir.
+
+    Uses rawpy (libraw bindings) by default — it calls into C with the GIL
+    released, so threads scale across cores. Falls back to parallel exiftool
+    subprocesses if rawpy isn't installed (or use_rawpy=False).
 
     Args:
         raw_files: list of RAW Paths
         temp_dir: output directory for preview .jpg files
         progress_label: prefix for the human-readable progress line
-        workers: parallel exiftool worker count (1 = serial, default)
+        workers: number of parallel worker threads (1 = serial)
         progress_cb: optional callable(current, total) for UI progress events
+        use_rawpy: prefer rawpy when available (default True)
 
     Returns:
         dict mapping original RAW path -> preview path
@@ -148,48 +199,50 @@ def extract_raw_previews(raw_files, temp_dir, progress_label="Extracting preview
         return {}
 
     workers = max(1, int(workers))
+    backend = "rawpy" if (use_rawpy and HAS_RAWPY) else "exiftool"
     print(f"{progress_label} from {len(raw_files)} RAW files "
-          f"({'serial' if workers == 1 else f'{workers} workers'})...")
+          f"({backend}, {'serial' if workers == 1 else f'{workers} workers'})...")
 
     preview_map: dict = {}
     failed: list = []
     lock = threading.Lock()
-    done = [0]  # mutable counter for thread-safe increment
+    done = [0]
+    total = len(raw_files)
 
-    def _worker(chunk):
-        local_map = {}
-        local_failed = []
-        with ExiftoolProcess() as et:
-            for raw_path in chunk:
-                preview_path = Path(temp_dir) / f"{raw_path.stem}_preview.jpg"
-                preview_data = et.execute('-b', '-PreviewImage', str(raw_path))
-                if preview_data:
-                    with open(preview_path, 'wb') as f:
-                        f.write(preview_data)
-                    local_map[raw_path] = preview_path
-                else:
-                    local_failed.append(raw_path)
+    def _progress_tick():
+        # Caller holds `lock`.
+        done[0] += 1
+        n = done[0]
+        if n % 100 == 0 or n == total:
+            print(f"\r  Extracted {n}/{total} previews...", end="", flush=True)
+        if progress_cb is not None:
+            progress_cb(n, total)
+
+    if backend == "rawpy":
+        # rawpy: one file per task — libraw opens/closes per call, so there's
+        # no persistent-handle benefit to chunking. Keep the pool simple.
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_extract_one_rawpy, rp, temp_dir) for rp in raw_files]
+            for fut in as_completed(futs):
+                raw_path, preview_path = fut.result()
                 with lock:
-                    done[0] += 1
-                    n = done[0]
-                    if n % 100 == 0 or n == len(raw_files):
-                        print(f"\r  Extracted {n}/{len(raw_files)} previews...",
-                              end="", flush=True)
-                    if progress_cb is not None:
-                        progress_cb(n, len(raw_files))
-        return local_map, local_failed
-
-    # Split raw_files into `workers` roughly-equal chunks
-    if workers == 1:
-        chunks = [raw_files]
+                    if preview_path is not None:
+                        preview_map[raw_path] = preview_path
+                    else:
+                        failed.append(raw_path)
+                    _progress_tick()
     else:
-        chunks = [raw_files[i::workers] for i in range(workers)]
-
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        for fut in as_completed([ex.submit(_worker, c) for c in chunks if c]):
-            local_map, local_failed = fut.result()
-            preview_map.update(local_map)
-            failed.extend(local_failed)
+        # exiftool fallback: chunk so each worker keeps a persistent process.
+        chunks = [raw_files] if workers == 1 else [raw_files[i::workers] for i in range(workers)]
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [
+                ex.submit(_extract_one_exiftool_worker, c, temp_dir, done, lock, total, progress_cb)
+                for c in chunks if c
+            ]
+            for fut in as_completed(futs):
+                local_map, local_failed = fut.result()
+                preview_map.update(local_map)
+                failed.extend(local_failed)
 
     print()
     if failed:
