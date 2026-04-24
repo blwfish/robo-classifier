@@ -11,3 +11,8 @@ test-*/
 *.csv
 *.txt
 *.pt
+
+# Local scaffolding (not tracked in repo)
+CLAUDE.md
+.claude/
+.claude.json
