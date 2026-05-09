@@ -348,6 +348,38 @@ kbd {
   margin: 0 4px;
 }
 
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--fg-dim);
+}
+.toggle-label input[type=checkbox] { cursor: pointer; }
+.toggle-label:has(input:checked) { color: var(--fg); }
+
+.level-override-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--fg-dim);
+}
+.level-override-label input[type=checkbox] { cursor: pointer; }
+.level-override-label:has(input:checked) { color: var(--fg); }
+.level-override-label:has(input:disabled) { opacity: 0.4; cursor: default; }
+
+.detail-roll {
+  font-size: 11px;
+  font-family: monospace;
+  color: var(--fg-dim);
+  min-width: 36px;
+}
+.detail-roll.active { color: #8fc; }
+
 #crop-preview-btn.active {
   background: var(--accent);
   border-color: var(--accent);

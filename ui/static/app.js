@@ -11,6 +11,8 @@ const state = {
   cropRect: null,    // {l,t,r,b} in normalized (0-1) coords on the shown image
   cropDrag: null,    // {startX, startY} during drag
   cropPreview: false, // when true, detail view shows just the cropped region
+  masterLevel: true,         // auto-level master toggle (persisted in localStorage)
+  levelOverrides: new Set(), // filenames where the master is reversed for that image
 };
 
 // ====== Screen management ======
@@ -152,6 +154,27 @@ async function init() {
   document.getElementById("crop-preview-btn").addEventListener("click", toggleCropPreview);
   document.getElementById("crop-clear").addEventListener("click", clearCrop);
   document.getElementById("junk-btn").addEventListener("click", junkCurrent);
+
+  // Auto-level: master toggle (persisted) + per-image override
+  const masterLevelEl = document.getElementById("master-level-chk");
+  state.masterLevel = localStorage.getItem("robo.masterLevel") !== "false";
+  masterLevelEl.checked = state.masterLevel;
+  masterLevelEl.addEventListener("change", () => {
+    state.masterLevel = masterLevelEl.checked;
+    localStorage.setItem("robo.masterLevel", state.masterLevel);
+    updateLevelUI(state.filteredImages[state.currentIndex]);
+  });
+  document.getElementById("img-level-chk").addEventListener("change", (e) => {
+    const img = state.filteredImages[state.currentIndex];
+    if (!img) return;
+    // Checkbox shows effective level state. Clicking flips it → toggle override.
+    const wasEffective = getEffectiveLevelAngle(img) !== 0;
+    if (e.target.checked !== wasEffective) {
+      if (state.levelOverrides.has(img.filename)) state.levelOverrides.delete(img.filename);
+      else state.levelOverrides.add(img.filename);
+    }
+    updateLevelUI(img);
+  });
 
   // Train screen
   document.getElementById("train-back").addEventListener("click", () => showScreen("ingest"));
@@ -554,6 +577,41 @@ function renderGrid() {
 }
 
 // ====== Detail ======
+// ── Auto-level helpers ──────────────────────────────────────────────────────
+
+function getEffectiveLevelAngle(img) {
+  if (!img) return 0;
+  const roll = img.roll_angle || 0;
+  if (roll === 0) return 0;
+  const isOverridden = state.levelOverrides.has(img.filename);
+  // master XOR override: override reverses master for this image
+  return (state.masterLevel !== isOverridden) ? roll : 0;
+}
+
+function updateLevelUI(img) {
+  const roll = img ? (img.roll_angle || 0) : 0;
+  const effectiveAngle = getEffectiveLevelAngle(img);
+  const chk = document.getElementById("img-level-chk");
+  const lbl = document.getElementById("img-level-label");
+  const rollEl = document.getElementById("detail-roll");
+
+  if (roll === 0) {
+    chk.disabled = true;
+    chk.checked = false;
+    lbl.textContent = "Level";
+    rollEl.textContent = "";
+    rollEl.className = "detail-roll";
+  } else {
+    chk.disabled = false;
+    chk.checked = effectiveAngle !== 0;
+    lbl.textContent = "Level";
+    rollEl.textContent = `${roll > 0 ? "+" : ""}${roll}°`;
+    rollEl.className = "detail-roll" + (effectiveAngle !== 0 ? " active" : "");
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+
 function openDetail(idx) {
   state.currentIndex = idx;
   state.cropMode = false;
@@ -586,12 +644,24 @@ async function renderDetail() {
       img.label = s.label;
       img.crop = s.crop;
       img._stateLoaded = true;
-      // State might now include a crop — reapply preview if it's active.
       applyCropPreviewIfActive();
     } catch {
       /* ignore — leave nulls */
     }
   }
+
+  // Lazy-load roll angle for auto-level (cached on img object after first fetch)
+  if (img.roll_angle === undefined) {
+    img.roll_angle = 0; // show UI immediately while fetch is in flight
+    updateLevelUI(img);
+    try {
+      const meta = await api(`/api/image_meta?input_dir=${encodeURIComponent(state.inputDir)}&filename=${encodeURIComponent(img.filename)}`);
+      img.roll_angle = meta.roll_angle;
+    } catch {
+      img.roll_angle = 0;
+    }
+  }
+  updateLevelUI(img);
 
   // Label button active state
   for (const btn of document.querySelectorAll(".label-btn")) {
@@ -747,20 +817,22 @@ async function saveCrop() {
     return;
   }
   const img = state.filteredImages[state.currentIndex];
+  const angle = getEffectiveLevelAngle(img);
   await apiPost("/api/crop", {
     input_dir: state.inputDir,
     filename: img.filename,
-    left: state.cropRect.l,
-    top: state.cropRect.t,
+    left:  state.cropRect.l,
+    top:   state.cropRect.t,
     right: state.cropRect.r,
     bottom: state.cropRect.b,
+    angle,
   });
   img.crop = {
     left:   state.cropRect.l,
     top:    state.cropRect.t,
     right:  state.cropRect.r,
     bottom: state.cropRect.b,
-    angle:  0,
+    angle,
   };
   exitCropMode();
   renderDetail();

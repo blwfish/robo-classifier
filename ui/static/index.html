@@ -414,6 +414,10 @@
     <button id="back-to-grid">← Grid</button>
     <span id="detail-filename"></span>
     <span id="detail-info"></span>
+    <label class="toggle-label" title="Apply camera roll correction to all crops (from EXIF RollAngle)">
+      <input type="checkbox" id="master-level-chk" />
+      Auto-level
+    </label>
     <span class="kbd-hint">
       <kbd>←</kbd><kbd>→</kbd> nav •
       <kbd>1</kbd> green <kbd>2</kbd> yellow <kbd>3</kbd> red <kbd>0</kbd> clear •
@@ -441,6 +445,12 @@
     <button id="crop-cancel" hidden>Cancel</button>
     <button id="crop-preview-btn">Preview crop (P)</button>
     <button id="crop-clear">Clear crop</button>
+    <span class="sep"></span>
+    <label class="level-override-label" title="Level this image (reverses master setting)">
+      <input type="checkbox" id="img-level-chk" />
+      <span id="img-level-label">Level</span>
+    </label>
+    <span id="detail-roll" class="detail-roll"></span>
     <span class="sep"></span>
     <button id="junk-btn" class="danger">Move to junk (X)</button>
   </div>

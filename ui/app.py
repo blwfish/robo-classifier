@@ -365,6 +365,14 @@ def image_state(input_dir: str, filename: str):
     return review.read_state(source)
 
 
+@app.get("/api/image_meta")
+def image_meta(input_dir: str, filename: str):
+    """Return EXIF-derived metadata for the detail view (roll angle for auto-level)."""
+    d = _resolve_input_dir(input_dir)
+    source = _resolve_image(d, filename)
+    return {"roll_angle": review.get_roll_angle(source)}
+
+
 @app.get("/api/thumb")
 def thumb(input_dir: str, filename: str, size: int = 512):
     d = _resolve_input_dir(input_dir)

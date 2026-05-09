@@ -21,6 +21,30 @@ from image_utils import RAW_EXTENSIONS
 
 LABEL_COLORS = {"Red", "Yellow", "Green", "Blue", "Purple", ""}
 
+# Portrait shots (Z9 writes ~90° into RollAngle for portrait orientation).
+# Threshold for treating a roll value as "portrait, skip correction".
+_PORTRAIT_THRESHOLD = 10.0
+
+
+def get_roll_angle(source: Path) -> float:
+    """
+    Read camera roll angle from EXIF. Returns 0.0 if unavailable or portrait.
+    Portrait shots (RollAngle ≈ ±90°) return 0.0 — handle in LR instead.
+    Sign convention matches crs:CropAngle: positive = CCW correction needed.
+    """
+    try:
+        result = subprocess.run(
+            ['exiftool', '-json', '-RollAngle', str(source)],
+            capture_output=True, text=True,
+        )
+        data = json.loads(result.stdout)
+        roll = float(data[0].get('RollAngle', 0) or 0)
+    except (json.JSONDecodeError, IndexError, ValueError, TypeError, FileNotFoundError):
+        return 0.0
+    if abs(abs(roll) - 90.0) < _PORTRAIT_THRESHOLD:
+        return 0.0  # portrait orientation
+    return round(roll, 2)
+
 
 def _target_for_write(source: Path) -> tuple[Path, bool]:
     """
