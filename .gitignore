@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 
 # Output / working data
+td/
 catalogs/
 dataset/
 reject/
