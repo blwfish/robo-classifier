@@ -82,11 +82,11 @@ Untagged images remain in the catalog as a safety net.
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install dependencies
-pip install torch torchvision scikit-learn pillow
+# Install dependencies (use locked versions for reproducibility)
+pip install -r requirements-lock.txt
 
 # Required: for JPEG keyword embedding and RAW preview extraction
-brew install exiftool
+brew install exiftool  # Requires >= 12.50 for reliable keyword writing
 ```
 
 ## Command Reference

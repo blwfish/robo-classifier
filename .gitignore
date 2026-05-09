@@ -9,8 +9,13 @@ reject/
 select/
 test-*/
 *.csv
-*.txt
+results.csv
+winners.csv
 *.pt
+model.pt
+
+# But DO track the requirements lock file for reproducibility
+!requirements-lock.txt
 
 # Local scaffolding (not tracked in repo)
 CLAUDE.md
