@@ -104,6 +104,13 @@ async function init() {
   const lastDir = localStorage.getItem("robo.lastInputDir");
   if (lastDir) document.getElementById("input_dir").value = lastDir;
 
+  // Perf panel — reload when opened, and once on init
+  const perfPanel = document.getElementById("perf-panel");
+  if (perfPanel) {
+    perfPanel.addEventListener("toggle", () => { if (perfPanel.open) loadPerfPanel(); });
+    loadPerfPanel();
+  }
+
   // Run form
   document.getElementById("run-form").addEventListener("submit", onRun);
   document.getElementById("browse-existing-btn").addEventListener("click", onBrowseExisting);
@@ -395,6 +402,7 @@ function streamProgress(jobId) {
         stageEl.textContent = `Done in ${total}.`;
         logBuffer.push(`${stamp()} pipeline complete (total ${total})`);
         scheduleLogFlush();
+        loadPerfPanel();
         openSession();
       } else {
         stageEl.textContent = `Error after ${total}: ${event.error || "unknown"}`;
@@ -1053,6 +1061,72 @@ async function runWriteKeywords(dryRun) {
 window.addEventListener("resize", () => {
   if (!screens.threshold.hidden) drawHistogram();
 });
+
+// ====== Perf panel ======
+
+async function loadPerfPanel() {
+  const wrap = document.getElementById("perf-table-wrap");
+  const summary = document.getElementById("perf-summary");
+  if (!wrap) return;
+  try {
+    const { runs } = await api("/api/perf/recent?n=15");
+    if (!runs || runs.length === 0) {
+      wrap.innerHTML = "<p class='placeholder'>No runs recorded yet.</p>";
+      return;
+    }
+    summary.textContent = `Recent runs (${runs.length})`;
+    wrap.innerHTML = "";
+    const table = document.createElement("table");
+    table.className = "perf-table";
+    table.innerHTML = `<thead><tr>
+      <th>Date</th><th>Host</th><th>Type</th><th>Device</th>
+      <th>Storage</th><th>Preset</th><th>Total</th><th>Stages</th>
+    </tr></thead>`;
+    const tbody = document.createElement("tbody");
+
+    for (const run of runs) {
+      const tr = document.createElement("tr");
+      const dt = new Date(run.ts * 1000);
+      const date = dt.toLocaleDateString() + " " + dt.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
+      const stages = (run.stages || []);
+      const maxDur = Math.max(...stages.map(s => s.duration_s), 0.001);
+
+      const stageCells = stages.map(s => {
+        const pct = Math.round(s.duration_s / maxDur * 100);
+        const isBottleneck = s.duration_s === maxDur;
+        const rate = s.mb_per_s  ? `${s.mb_per_s} MB/s` :
+                     s.files_per_s ? `${s.files_per_s} f/s` : "";
+        const dur = fmtDur(s.duration_s);
+        return `<span class="perf-stage${isBottleneck ? " bottleneck" : ""}"
+          title="${s.name}: ${dur}${rate ? "  " + rate : ""}  (${s.files||0} files)"
+          style="--pct:${pct}%">${s.name}</span>`;
+      }).join("");
+
+      tr.innerHTML = `
+        <td class="perf-date">${date}</td>
+        <td>${run.hostname}</td>
+        <td class="perf-type">${run.run_type}</td>
+        <td title="${run.device_name}">${run.device}</td>
+        <td class="perf-storage perf-storage-${run.storage_class || 'unknown'}">${run.storage_class || "?"}</td>
+        <td>${run.preset || "—"}</td>
+        <td>${fmtDur(run.total_duration_s)}</td>
+        <td class="perf-stages">${stageCells}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+  } catch (e) {
+    wrap.innerHTML = `<p class='placeholder'>Error loading perf data: ${e.message}</p>`;
+  }
+}
+
+function fmtDur(s) {
+  if (!s) return "—";
+  if (s < 60)   return `${s.toFixed(0)}s`;
+  if (s < 3600) return `${(s/60).toFixed(1)}m`;
+  return `${(s/3600).toFixed(1)}h`;
+}
 
 // ====== Generic folder browser controller ======
 // Drives any {panel, path-display, list, up, use, close} set of elements.

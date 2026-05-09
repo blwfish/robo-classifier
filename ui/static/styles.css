@@ -610,3 +610,78 @@ button.small {
 
 #ingest-progress-box { margin-top: 20px; }
 #ingest-done-box { margin-top: 20px; }
+
+/* ====== Perf panel ====== */
+.perf-panel {
+  margin-top: 24px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+}
+.perf-panel summary {
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  user-select: none;
+  list-style: none;
+}
+.perf-panel summary::-webkit-details-marker { display: none; }
+.perf-panel summary::before { content: "▶ "; font-size: 9px; }
+.perf-panel[open] summary::before { content: "▼ "; }
+
+#perf-table-wrap { padding: 0 8px 12px; overflow-x: auto; }
+
+.perf-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.perf-table th {
+  text-align: left;
+  padding: 4px 8px;
+  color: var(--fg-dim);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.perf-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.perf-table tr:last-child td { border-bottom: none; }
+.perf-table tr:hover td { background: var(--panel-2); }
+
+.perf-date { color: var(--fg-dim); font-size: 10px; }
+.perf-type  { color: var(--accent); }
+
+.perf-storage        { font-size: 10px; padding: 1px 5px; border-radius: 3px; }
+.perf-storage-nvme   { background: #1a3a1a; color: #8f8; }
+.perf-storage-usb3   { background: #2a2a10; color: #ee9; }
+.perf-storage-usb2   { background: #3a2010; color: #e96; }
+.perf-storage-hdd    { background: #2a1a1a; color: #f88; }
+.perf-storage-thunderbolt { background: #1a2a3a; color: #8cf; }
+.perf-storage-unknown { color: var(--fg-dim); }
+
+.perf-stages { display: flex; gap: 4px; align-items: center; }
+
+.perf-stage {
+  display: inline-block;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #2a3a2a var(--pct), #222 var(--pct));
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+  cursor: default;
+  white-space: nowrap;
+}
+.perf-stage.bottleneck {
+  background: linear-gradient(90deg, #3a2a1a var(--pct), #222 var(--pct));
+  border-color: #664;
+  color: #ee9;
+}

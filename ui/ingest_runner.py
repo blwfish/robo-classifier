@@ -52,10 +52,21 @@ class IngestJobManager:
             job.events.put({"type": "started"})
             try:
                 from ingest import ingest as run_ingest
+                from perf import PerfRecorder
+
+                # Use first source path as the input_path for storage classification.
+                input_path = job.sources[0]["path"] if job.sources else job.dest_dir
+
+                rec = PerfRecorder(
+                    downstream_cb=_progress,
+                    run_type="ingest",
+                    input_path=input_path,
+                    extra={"dest_path": job.dest_dir, "source_count": len(job.sources)},
+                )
                 summary = run_ingest(
                     sources=job.sources,
                     dest_dir=job.dest_dir,
-                    progress_cb=_progress,
+                    progress_cb=rec.cb,
                 )
                 job.summary = summary
                 job.status = "done"

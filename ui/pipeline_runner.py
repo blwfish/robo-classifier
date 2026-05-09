@@ -55,13 +55,29 @@ class JobManager:
             try:
                 # Import here so the UI server starts fast (torch import is slow).
                 from classify import run_pipeline
+                from perf import PerfRecorder, measure_input_bytes
+                from image_utils import RAW_EXTENSIONS, IMAGE_EXTENSIONS
 
-                # UI runs always pregenerate thumbs so the grid opens instantly.
                 options = dict(job.options)
                 options.setdefault("pregen_thumbs", True)
+
+                rec = PerfRecorder(
+                    downstream_cb=_progress,
+                    run_type="pipeline",
+                    input_path=str(job.input_dir),
+                    preset=options.get("preset", ""),
+                    profile=options.get("profile", "") or "",
+                )
+                # Pre-measure input bytes so extract stage can report MB/s.
+                try:
+                    nbytes = measure_input_bytes(job.input_dir, IMAGE_EXTENSIONS)
+                    rec.set_stage_bytes("extract", nbytes)
+                except Exception:
+                    pass
+
                 summary = run_pipeline(
                     input_dir=job.input_dir,
-                    progress_cb=_progress,
+                    progress_cb=rec.cb,
                     **options,
                 )
                 job.summary = summary
