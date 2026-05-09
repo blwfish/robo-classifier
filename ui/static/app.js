@@ -15,6 +15,8 @@ const state = {
 
 // ====== Screen management ======
 const screens = {
+  settings:  document.getElementById("screen-settings"),
+  train:     document.getElementById("screen-train"),
   ingest:    document.getElementById("screen-ingest"),
   run:       document.getElementById("screen-run"),
   threshold: document.getElementById("screen-threshold"),
@@ -151,7 +153,73 @@ async function init() {
   document.getElementById("crop-clear").addEventListener("click", clearCrop);
   document.getElementById("junk-btn").addEventListener("click", junkCurrent);
 
+  // Train screen
+  document.getElementById("train-back").addEventListener("click", () => showScreen("ingest"));
+  document.getElementById("train-go-btn").addEventListener("click", startTraining);
+  document.getElementById("train-again-btn").addEventListener("click", resetTrainScreen);
+
+  trainSelectBrowser = makeBrowser({
+    panelId: "train-select-browser", pathId: "train-select-path",
+    listId: "train-select-list", upId: "train-select-up",
+    useId: "train-select-use", closeId: "train-select-close",
+    onSelect(path) {
+      document.getElementById("train-select-dir").value = path;
+      updateTrainDataCount("select", path);
+      updateTrainGoBtn();
+      saveTrainRecentDir("select", path);
+    },
+  });
+  trainRejectBrowser = makeBrowser({
+    panelId: "train-reject-browser", pathId: "train-reject-path",
+    listId: "train-reject-list", upId: "train-reject-up",
+    useId: "train-reject-use", closeId: "train-reject-close",
+    onSelect(path) {
+      document.getElementById("train-reject-dir").value = path;
+      updateTrainDataCount("reject", path);
+      updateTrainGoBtn();
+      saveTrainRecentDir("reject", path);
+    },
+  });
+  document.getElementById("train-select-browse").addEventListener("click", () => {
+    const hint = document.getElementById("train-select-dir").value.trim()
+      || localStorage.getItem("robo.train.recentSelect") || "";
+    trainSelectBrowser.open(hint);
+  });
+  document.getElementById("train-reject-browse").addEventListener("click", () => {
+    const hint = document.getElementById("train-reject-dir").value.trim()
+      || localStorage.getItem("robo.train.recentReject") || "";
+    trainRejectBrowser.open(hint);
+  });
+  document.getElementById("train-model-name").addEventListener("input", updateTrainGoBtn);
+  document.getElementById("train-use-model-btn").addEventListener("click", () => {
+    // Reload profiles and switch to run screen
+    refreshProfiles().then(() => showScreen("run"));
+  });
+
+  // Settings screen
+  document.getElementById("settings-btn").addEventListener("click", openSettings);
+  document.getElementById("settings-back").addEventListener("click", () => showScreen(state.prevScreen || "ingest"));
+  document.getElementById("cfg-save-btn").addEventListener("click", saveConfig);
+  document.querySelectorAll(".cfg-browse-btn").forEach(btn =>
+    btn.addEventListener("click", () => cfgBrowser.open(""))
+  );
+  cfgBrowser = makeBrowser({
+    panelId: "cfg-browser", pathId: "cfg-browser-path",
+    listId: "cfg-browser-list", upId: "cfg-browser-up",
+    useId: "cfg-browser-use", closeId: "cfg-browser-close",
+    onSelect(path) {
+      const field = document._cfgBrowseField;
+      if (field === "model_library")  document.getElementById("cfg-model-library").value = path;
+      if (field === "dataset_scratch") document.getElementById("cfg-dataset-scratch").value = path;
+    },
+  });
+  // Attach field tracking to browse buttons
+  document.querySelectorAll(".cfg-browse-btn").forEach(btn =>
+    btn.addEventListener("click", () => { document._cfgBrowseField = btn.dataset.field; })
+  );
+
   // Ingest screen
+  document.getElementById("ingest-to-train").addEventListener("click", () => openTrainScreen());
   document.getElementById("ingest-to-run").addEventListener("click", () => showScreen("run"));
   document.getElementById("refresh-cards-btn").addEventListener("click", loadCards);
   document.getElementById("add-local-btn").addEventListener("click", () => localBrowser.open(""));
@@ -195,6 +263,7 @@ async function init() {
 
   showScreen("ingest");
   initIngest();
+  checkConfigBanner();
 }
 
 // ====== Folder browser ======
@@ -1176,6 +1245,318 @@ function makeBrowser({ panelId, pathId, listId, upId, useId, closeId, onSelect }
     open(hint = "") { panel.hidden = false; loadAt(hint || ""); },
     close() { panel.hidden = true; },
   };
+}
+
+// ====== Train screen ======
+
+let trainSelectBrowser = null;
+let trainRejectBrowser = null;
+
+// Per-machine recent dirs for select/reject (localStorage, last 1 each — simple)
+function saveTrainRecentDir(which, path) {
+  localStorage.setItem(`robo.train.recent${which.charAt(0).toUpperCase() + which.slice(1)}`, path);
+}
+
+function updateTrainGoBtn() {
+  const sel  = document.getElementById("train-select-dir").value.trim();
+  const rej  = document.getElementById("train-reject-dir").value.trim();
+  const name = document.getElementById("train-model-name").value.trim();
+  document.getElementById("train-go-btn").disabled = !(sel && rej && name);
+}
+
+async function updateTrainDataCount(which, path) {
+  const el = document.getElementById(`train-${which}-count`);
+  el.textContent = "…";
+  try {
+    const sel = document.getElementById("train-select-dir").value.trim();
+    const rej = document.getElementById("train-reject-dir").value.trim();
+    if (!sel || !rej) return;
+    const data = await api(`/api/train/data_stats?select_dir=${encodeURIComponent(sel)}&reject_dir=${encodeURIComponent(rej)}`);
+    document.getElementById("train-select-count").textContent = data.select >= 0 ? `${data.select.toLocaleString()} images` : "not found";
+    document.getElementById("train-reject-count").textContent = data.reject >= 0 ? `${data.reject.toLocaleString()} images` : "not found";
+  } catch { el.textContent = ""; }
+}
+
+async function openTrainScreen() {
+  // Check config first
+  const data = await api("/api/config");
+  const missing = data.missing_required || [];
+  document.getElementById("train-config-banner").hidden = missing.length === 0;
+  document.getElementById("train-go-btn").disabled = missing.length > 0;
+
+  // Restore last-used dirs
+  const lastSel = localStorage.getItem("robo.train.recentSelect") || "";
+  const lastRej = localStorage.getItem("robo.train.recentReject") || "";
+  if (lastSel) document.getElementById("train-select-dir").value = lastSel;
+  if (lastRej) document.getElementById("train-reject-dir").value = lastRej;
+  if (lastSel && lastRej) updateTrainDataCount("select", lastSel);
+
+  resetTrainScreen(/*keepDirs=*/true);
+  showScreen("train");
+}
+
+function resetTrainScreen(keepDirs = false) {
+  if (!keepDirs) {
+    document.getElementById("train-select-dir").value = "";
+    document.getElementById("train-reject-dir").value = "";
+    document.getElementById("train-select-count").textContent = "";
+    document.getElementById("train-reject-count").textContent = "";
+  }
+  document.getElementById("train-progress-box").hidden = true;
+  document.getElementById("train-done-box").hidden = true;
+  document.getElementById("train-status-line").textContent = "";
+  document.getElementById("train-go-btn").disabled = false;
+  trainChartData = { trainAcc: [], testAcc: [], trainLoss: [] };
+  updateTrainGoBtn();
+}
+
+// ---- Chart ----
+
+let trainChartData = { trainAcc: [], testAcc: [], trainLoss: [] };
+
+function drawTrainChart() {
+  const canvas = document.getElementById("train-chart");
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.parentElement.clientWidth - 16;
+  const H = 180;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + "px"; canvas.style.height = H + "px";
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+
+  const { trainAcc, testAcc, trainLoss } = trainChartData;
+  const n = Math.max(trainAcc.length, 1);
+
+  function plotLine(values, color, scale = 1) {
+    if (!values.length) return;
+    ctx.beginPath();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    values.forEach((v, i) => {
+      const x = (i / Math.max(n - 1, 1)) * (W - 20) + 10;
+      const y = H - 10 - ((v * scale) / 100) * (H - 20);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+
+  // Grid lines at 25%, 50%, 75%, 100% accuracy
+  ctx.strokeStyle = "rgba(255,255,255,0.06)";
+  ctx.lineWidth = 1;
+  [25, 50, 75, 100].forEach(pct => {
+    const y = H - 10 - (pct / 100) * (H - 20);
+    ctx.beginPath(); ctx.moveTo(10, y); ctx.lineTo(W - 10, y); ctx.stroke();
+    ctx.fillStyle = "rgba(255,255,255,0.25)";
+    ctx.font = "9px system-ui";
+    ctx.fillText(pct + "%", 0, y + 3);
+  });
+
+  plotLine(trainAcc,  "hsl(150,70%,55%)");
+  plotLine(testAcc,   "hsl(200,80%,65%)");
+  plotLine(trainLoss, "hsl(30,80%,60%)", 10);  // loss scaled ×10 for visibility
+}
+
+// ---- Stream ----
+
+async function startTraining() {
+  const selDir  = document.getElementById("train-select-dir").value.trim();
+  const rejDir  = document.getElementById("train-reject-dir").value.trim();
+  const name    = document.getElementById("train-model-name").value.trim();
+  const desc    = document.getElementById("train-model-desc").value.trim();
+  const epochs  = parseInt(document.getElementById("train-epochs").value)   || 15;
+  const lr      = parseFloat(document.getElementById("train-lr").value)      || 1e-4;
+  const batch   = parseInt(document.getElementById("train-batch").value)     || 32;
+  const tsize   = parseFloat(document.getElementById("train-test-size").value) || 0.2;
+
+  if (!selDir || !rejDir || !name) return;
+
+  document.getElementById("train-go-btn").disabled = true;
+  document.getElementById("train-progress-box").hidden = false;
+  document.getElementById("train-done-box").hidden = true;
+  document.getElementById("train-epoch-log").textContent = "";
+  document.getElementById("train-phase-label").textContent = "Starting…";
+  document.getElementById("train-progress-bar").value = 0;
+  trainChartData = { trainAcc: [], testAcc: [], trainLoss: [] };
+  drawTrainChart();
+
+  try {
+    const { job_id, model_output } = await apiPost("/api/train/start", {
+      select_dir: selDir, reject_dir: rejDir,
+      model_name: name, description: desc,
+      test_size: tsize, epochs, learning_rate: lr, batch_size: batch,
+    });
+    document.getElementById("train-done-path").textContent = model_output;
+    streamTrainProgress(job_id, epochs);
+  } catch (e) {
+    document.getElementById("train-phase-label").textContent = `Error: ${e.message}`;
+    document.getElementById("train-go-btn").disabled = false;
+  }
+}
+
+function streamTrainProgress(jobId, totalEpochs) {
+  const es = new EventSource(`/api/train/progress/${jobId}`);
+  const phaseEl = document.getElementById("train-phase-label");
+  const barEl   = document.getElementById("train-progress-bar");
+  const textEl  = document.getElementById("train-progress-text");
+  const logEl   = document.getElementById("train-epoch-log");
+
+  let logLines = [];
+  let logTimer = null;
+  function appendLog(line) {
+    logLines.push(line);
+    if (!logTimer) logTimer = setTimeout(() => {
+      logTimer = null;
+      logEl.textContent = logLines.slice(-100).join("\n");
+      logEl.scrollTop = logEl.scrollHeight;
+    }, 150);
+  }
+
+  es.onmessage = (ev) => {
+    let event;
+    try { event = JSON.parse(ev.data); } catch { return; }
+    const t = event.type;
+
+    if (t === "phase") {
+      phaseEl.textContent = event.message;
+      appendLog(`\n[${event.phase}] ${event.message}`);
+    } else if (t === "scan") {
+      textEl.textContent = `${event.select.toLocaleString()} select · ${event.reject.toLocaleString()} reject`;
+    } else if (t === "split") {
+      textEl.textContent =
+        `Train: ${event.train_select} sel / ${event.train_reject} rej  ·  ` +
+        `Test: ${event.test_select} sel / ${event.test_reject} rej`;
+      appendLog(`Split: train ${event.train_select}+${event.train_reject}  test ${event.test_select}+${event.test_reject}`);
+    } else if (t === "copy") {
+      barEl.max = event.total; barEl.value = event.done;
+    } else if (t === "setup") {
+      phaseEl.textContent = `Training on ${event.device} · ${event.train_total} train / ${event.test_total} test`;
+      barEl.max = totalEpochs; barEl.value = 0;
+    } else if (t === "epoch") {
+      barEl.value = event.epoch;
+      phaseEl.textContent = `Epoch ${event.epoch} / ${event.epochs}`;
+      trainChartData.trainAcc.push(event.train_acc);
+      trainChartData.testAcc.push(event.test_acc);
+      trainChartData.trainLoss.push(event.train_loss);
+      drawTrainChart();
+      appendLog(
+        `  Epoch ${String(event.epoch).padStart(2)}/${event.epochs}` +
+        `  train ${event.train_acc.toFixed(1)}%  test ${event.test_acc.toFixed(1)}%` +
+        `  loss ${event.train_loss.toFixed(4)}` +
+        (event.saved ? "  ✓ saved" : "") +
+        `  (${event.elapsed_s}s)`
+      );
+    } else if (t === "status") {
+      es.close();
+      if (logTimer) { clearTimeout(logTimer); logEl.textContent = logLines.join("\n"); }
+      if (event.status === "done" && event.summary) {
+        barEl.value = barEl.max;
+        phaseEl.textContent = "Training complete.";
+        document.getElementById("train-best-acc").textContent =
+          `${event.summary.best_acc}%`;
+        document.getElementById("train-done-box").hidden = false;
+        loadPerfPanel();
+      } else {
+        phaseEl.textContent = `Error: ${event.error || "unknown"}`;
+        document.getElementById("train-go-btn").disabled = false;
+      }
+    } else if (t === "error") {
+      appendLog(`ERROR: ${event.message}`);
+    }
+  };
+
+  es.onerror = () => {
+    es.close();
+    document.getElementById("train-go-btn").disabled = false;
+  };
+}
+
+// ====== Settings screen ======
+
+let cfgBrowser = null;
+
+async function openSettings() {
+  state.prevScreen = Object.entries(screens).find(([, el]) => !el.hidden)?.[0] || "ingest";
+  showScreen("settings");
+  await loadConfig();
+}
+
+async function loadConfig() {
+  try {
+    const data = await api("/api/config");
+    const fields = data.fields || {};
+    document.getElementById("cfg-model-library").value  = fields.model_library?.value  || "";
+    document.getElementById("cfg-dataset-scratch").value = fields.dataset_scratch?.value || "";
+    const missing = data.missing_required || [];
+    document.getElementById("config-missing-banner").hidden = missing.length === 0;
+  } catch (e) {
+    document.getElementById("cfg-save-status").textContent = `Load error: ${e.message}`;
+  }
+}
+
+async function saveConfig() {
+  const statusEl = document.getElementById("cfg-save-status");
+  statusEl.textContent = "Saving…";
+  statusEl.className = "cfg-save-status";
+  try {
+    const updates = {
+      model_library:   document.getElementById("cfg-model-library").value.trim(),
+      dataset_scratch: document.getElementById("cfg-dataset-scratch").value.trim(),
+    };
+    const data = await apiPost("/api/config", { updates });
+    const missing = data.missing_required || [];
+    document.getElementById("config-missing-banner").hidden = missing.length === 0;
+    statusEl.textContent = "Saved.";
+    statusEl.className = "cfg-save-status ok";
+    // Refresh profile list in case model_library changed
+    await refreshProfiles();
+    setTimeout(() => { statusEl.textContent = ""; }, 2000);
+  } catch (e) {
+    statusEl.textContent = `Error: ${e.message}`;
+    statusEl.className = "cfg-save-status err";
+  }
+}
+
+// Reload profile dropdown (called after config save)
+async function refreshProfiles() {
+  try {
+    const { profiles } = await api("/api/profiles");
+    const select = document.getElementById("profile");
+    const cur = select.value;
+    select.innerHTML = "";
+    if (profiles.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = ""; opt.textContent = "(no models in library)";
+      select.appendChild(opt);
+    } else {
+      for (const p of profiles) {
+        const opt = document.createElement("option");
+        opt.value = p.name === "(default)" ? "" : p.name;
+        opt.textContent = p.description ? `${p.name} — ${p.description}` : p.name;
+        select.appendChild(opt);
+      }
+    }
+    // Restore previous selection if still present
+    if ([...select.options].some(o => o.value === cur)) select.value = cur;
+  } catch { /* ignore */ }
+}
+
+// Check config on startup and show banner on run screen if misconfigured
+async function checkConfigBanner() {
+  try {
+    const data = await api("/api/config");
+    const missing = data.missing_required || [];
+    let banner = document.getElementById("run-config-banner");
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = "run-config-banner";
+      banner.className = "config-banner";
+      banner.innerHTML = `Paths not configured. <button type="button" onclick="openSettings()">Open Settings →</button>`;
+      document.getElementById("screen-run").prepend(banner);
+    }
+    banner.hidden = missing.length === 0;
+  } catch { /* ignore */ }
 }
 
 // ====== Ingest screen ======

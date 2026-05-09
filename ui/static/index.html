@@ -10,12 +10,65 @@
 <header>
   <h1>robo-classifier</h1>
   <nav id="crumbs"></nav>
+  <button type="button" id="settings-btn" class="settings-btn" title="Settings">⚙</button>
 </header>
+
+<!-- ============= SCREEN: Settings ============= -->
+<section id="screen-settings" class="screen" hidden>
+  <div class="toolbar">
+    <h2 style="margin:0">Settings</h2>
+    <button type="button" id="settings-back">← Back</button>
+  </div>
+
+  <div id="config-missing-banner" class="config-banner" hidden>
+    Required paths are not configured. Set them below before using Train or running models.
+  </div>
+
+  <div class="settings-grid">
+    <div class="settings-row">
+      <label class="settings-label">
+        Model library
+        <span class="settings-hint">Where trained models (.pt + .json) are stored. Tracked on gitea.</span>
+      </label>
+      <div class="input-row">
+        <input type="text" id="cfg-model-library" placeholder="(not set)" />
+        <button type="button" class="cfg-browse-btn small" data-field="model_library">Browse…</button>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <label class="settings-label">
+        Dataset scratch
+        <span class="settings-hint">Temporary train/test splits. Not tracked in git. Can be large.</span>
+      </label>
+      <div class="input-row">
+        <input type="text" id="cfg-dataset-scratch" placeholder="(not set)" />
+        <button type="button" class="cfg-browse-btn small" data-field="dataset_scratch">Browse…</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="cfg-browser" class="browser" hidden>
+    <div class="browser-header">
+      <button type="button" id="cfg-browser-up">↑</button>
+      <span id="cfg-browser-path" class="browser-path"></span>
+      <button type="button" id="cfg-browser-use">Use this folder</button>
+      <button type="button" id="cfg-browser-close">Close</button>
+    </div>
+    <ul id="cfg-browser-list"></ul>
+  </div>
+
+  <div class="settings-actions">
+    <button type="button" id="cfg-save-btn" class="primary">Save</button>
+    <span id="cfg-save-status" class="cfg-save-status"></span>
+  </div>
+</section>
 
 <!-- ============= SCREEN 0: Ingest ============= -->
 <section id="screen-ingest" class="screen" hidden>
   <div class="toolbar">
     <h2 style="margin:0">Ingest</h2>
+    <button type="button" id="ingest-to-train">Train model →</button>
     <button type="button" id="ingest-to-run">Skip to pipeline →</button>
   </div>
 
@@ -88,6 +141,119 @@
       <button type="button" id="ingest-run-pipeline-btn" class="primary">Run pipeline on this folder →</button>
       <button type="button" id="ingest-again-btn">Ingest another</button>
     </div>
+  </div>
+</section>
+
+<!-- ============= SCREEN: Train ============= -->
+<section id="screen-train" class="screen" hidden>
+  <div class="toolbar">
+    <h2 style="margin:0">Train model</h2>
+    <button type="button" id="train-back">← Back</button>
+  </div>
+
+  <div id="train-config-banner" class="config-banner" hidden>
+    Model library and dataset scratch must be configured before training.
+    <button type="button" onclick="openSettings()">Open Settings →</button>
+  </div>
+
+  <div class="train-layout">
+
+    <!-- Left: data + model config -->
+    <div class="train-col">
+      <h3 class="train-section-head">Training data</h3>
+      <div class="train-dir-row">
+        <label class="train-dir-label">Select (interesting)</label>
+        <div class="input-row">
+          <input type="text" id="train-select-dir" placeholder="(not set)" />
+          <button type="button" id="train-select-browse" class="small">Browse…</button>
+        </div>
+        <span id="train-select-count" class="dir-count"></span>
+      </div>
+      <div class="train-dir-row">
+        <label class="train-dir-label">Reject (boring)</label>
+        <div class="input-row">
+          <input type="text" id="train-reject-dir" placeholder="(not set)" />
+          <button type="button" id="train-reject-browse" class="small">Browse…</button>
+        </div>
+        <span id="train-reject-count" class="dir-count"></span>
+      </div>
+
+      <div id="train-select-browser" class="browser" hidden>
+        <div class="browser-header">
+          <button type="button" id="train-select-up">↑</button>
+          <span id="train-select-path" class="browser-path"></span>
+          <button type="button" id="train-select-use">Use this folder</button>
+          <button type="button" id="train-select-close">Close</button>
+        </div>
+        <ul id="train-select-list"></ul>
+      </div>
+      <div id="train-reject-browser" class="browser" hidden>
+        <div class="browser-header">
+          <button type="button" id="train-reject-up">↑</button>
+          <span id="train-reject-path" class="browser-path"></span>
+          <button type="button" id="train-reject-use">Use this folder</button>
+          <button type="button" id="train-reject-close">Close</button>
+        </div>
+        <ul id="train-reject-list"></ul>
+      </div>
+
+      <h3 class="train-section-head" style="margin-top:20px">Model</h3>
+      <label class="train-field-label">Name <span class="train-hint">(saved as &lt;name&gt;.pt in model library)</span></label>
+      <input type="text" id="train-model-name" placeholder="e.g. pca-2026" />
+      <label class="train-field-label" style="margin-top:10px">Description <span class="train-hint">(optional, shown in profile picker)</span></label>
+      <input type="text" id="train-model-desc" placeholder="PCA 2026 season" />
+
+      <h3 class="train-section-head" style="margin-top:20px">Hyperparameters</h3>
+      <div class="train-params">
+        <label class="train-field-label">Epochs
+          <input type="number" id="train-epochs" value="15" min="1" max="100" />
+        </label>
+        <label class="train-field-label">Learning rate
+          <input type="number" id="train-lr" value="0.0001" step="0.00001" />
+        </label>
+        <label class="train-field-label">Batch size
+          <input type="number" id="train-batch" value="32" min="4" max="512" />
+        </label>
+        <label class="train-field-label">Test fraction
+          <input type="number" id="train-test-size" value="0.2" min="0.05" max="0.4" step="0.05" />
+        </label>
+      </div>
+
+      <div class="train-actions">
+        <button type="button" id="train-go-btn" class="primary" disabled>Start training</button>
+        <span id="train-status-line" class="train-status-line"></span>
+      </div>
+    </div>
+
+    <!-- Right: live progress + chart -->
+    <div class="train-col">
+      <div id="train-progress-box" hidden>
+        <h3 id="train-phase-label" class="train-section-head">Preparing…</h3>
+        <progress id="train-progress-bar" value="0" max="1"></progress>
+        <div id="train-progress-text" class="train-progress-text"></div>
+
+        <canvas id="train-chart" class="train-chart"></canvas>
+        <div class="train-chart-legend">
+          <span class="legend-train">— train acc</span>
+          <span class="legend-test">— test acc</span>
+          <span class="legend-loss">— train loss (×10)</span>
+        </div>
+
+        <div id="train-epoch-log" class="ingest-log"></div>
+      </div>
+
+      <div id="train-done-box" hidden>
+        <div class="train-done-result">
+          <span class="train-done-acc">Best test accuracy: <strong id="train-best-acc"></strong></span>
+          <span class="train-done-path">Saved: <code id="train-done-path"></code></span>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <button type="button" id="train-use-model-btn" class="primary">Use this model →</button>
+          <button type="button" id="train-again-btn">Train another</button>
+        </div>
+      </div>
+    </div>
+
   </div>
 </section>
 

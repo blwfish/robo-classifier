@@ -34,7 +34,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from ui import ingest_runner, pipeline_runner, review, thumbs
+from app_config import config as app_config
+from ui import ingest_runner, pipeline_runner, review, thumbs, train_runner
 from image_utils import RAW_EXTENSIONS, JPG_EXTENSIONS
 
 
@@ -189,11 +190,24 @@ def get_presets():
 
 @app.get("/api/profiles")
 def list_profiles():
-    """List available model profiles (models/*.pt with optional .json sidecar)."""
-    models_dir = ROOT / "models"
+    """List available model profiles from the configured model library."""
+    # Primary: configured model_library
+    search_dirs = []
+    lib = app_config.model_library
+    if lib and lib.exists():
+        search_dirs.append(lib)
+    # Fallback for dev: ROOT/models if it exists and library isn't configured
+    fallback = ROOT / "models"
+    if fallback.exists() and fallback not in search_dirs:
+        search_dirs.append(fallback)
+
     profiles = []
-    if models_dir.exists():
+    seen = set()
+    for models_dir in search_dirs:
         for pt in sorted(models_dir.glob("*.pt")):
+            if pt.stem in seen:
+                continue
+            seen.add(pt.stem)
             meta = {}
             sidecar = pt.with_suffix(".json")
             if sidecar.exists():
@@ -206,16 +220,18 @@ def list_profiles():
                 "path": str(pt),
                 "description": meta.get("description", ""),
                 "trained_at": meta.get("trained_at", ""),
+                "library": str(models_dir),
             })
 
-    # Also surface the default model.pt in repo root if present
+    # Legacy: bare model.pt in repo root
     root_pt = ROOT / "model.pt"
-    if root_pt.exists() and not any(p['name'] == "model" for p in profiles):
+    if root_pt.exists() and "model" not in seen:
         profiles.insert(0, {
             "name": "(default)",
             "path": str(root_pt),
             "description": "legacy model.pt in repo root",
             "trained_at": "",
+            "library": str(ROOT),
         })
     return {"profiles": profiles}
 
@@ -514,6 +530,115 @@ def move_to_junk(req: JunkMoveRequest):
     if xmp.exists():
         shutil.move(str(xmp), str(junk_dir / xmp.name))
     return {"ok": True, "moved_to": str(dest)}
+
+
+# -----------------------------------------------------------------------------
+# App config
+# -----------------------------------------------------------------------------
+
+class ConfigUpdateRequest(BaseModel):
+    updates: dict[str, str]
+
+
+@app.get("/api/config")
+def get_config():
+    return app_config.as_dict()
+
+
+@app.post("/api/config")
+def update_config(req: ConfigUpdateRequest):
+    app_config.set_many(req.updates)
+    return app_config.as_dict()
+
+
+# -----------------------------------------------------------------------------
+# Training
+# -----------------------------------------------------------------------------
+
+class TrainStartRequest(BaseModel):
+    select_dir: str
+    reject_dir: str
+    model_name: str
+    description: str = ""
+    test_size: float = 0.2
+    epochs: int = 15
+    learning_rate: float = 1e-4
+    batch_size: int = 32
+
+
+@app.get("/api/train/data_stats")
+def train_data_stats(select_dir: str, reject_dir: str):
+    """Count images in select/reject dirs without starting a job."""
+    def _count(d: str) -> int:
+        p = Path(d).expanduser()
+        if not p.is_dir():
+            return -1
+        exts = {".jpg", ".jpeg", ".JPG", ".JPEG"}
+        return sum(1 for f in p.iterdir() if f.is_file() and f.suffix in exts)
+
+    return {
+        "select": _count(select_dir),
+        "reject": _count(reject_dir),
+    }
+
+
+@app.post("/api/train/start")
+def train_start(req: TrainStartRequest):
+    lib = app_config.model_library
+    if not lib:
+        raise HTTPException(400, "model_library not configured — open Settings first")
+    scratch = app_config.dataset_scratch
+    if not scratch:
+        raise HTTPException(400, "dataset_scratch not configured — open Settings first")
+
+    lib.mkdir(parents=True, exist_ok=True)
+    model_output = str(lib / f"{req.model_name}.pt")
+
+    job = train_runner.MANAGER.create(
+        select_dir=req.select_dir,
+        reject_dir=req.reject_dir,
+        dataset_dir=str(scratch),
+        test_size=req.test_size,
+        model_output=model_output,
+        model_name=req.model_name,
+        description=req.description,
+        epochs=req.epochs,
+        learning_rate=req.learning_rate,
+        batch_size=req.batch_size,
+    )
+    train_runner.MANAGER.start(job)
+    return {"job_id": job.id, "model_output": model_output}
+
+
+@app.get("/api/train/progress/{job_id}")
+async def train_progress(job_id: str, request: Request):
+    job = train_runner.MANAGER.get(job_id)
+    if job is None:
+        raise HTTPException(404, "unknown train job")
+
+    async def event_stream():
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                event = job.events.get(timeout=0.25)
+            except Exception:
+                if job.status in ("done", "error"):
+                    while not job.events.empty():
+                        ev = job.events.get_nowait()
+                        yield f"data: {json.dumps(ev, default=str)}\n\n"
+                        if ev.get("type") == "__end__":
+                            return
+                    yield f"data: {json.dumps({'type': 'status', 'status': job.status, 'summary': job.summary, 'error': job.error}, default=str)}\n\n"
+                    return
+                yield ": heartbeat\n\n"
+                continue
+            if event.get("type") == "__end__":
+                yield f"data: {json.dumps({'type': 'status', 'status': job.status, 'summary': job.summary, 'error': job.error}, default=str)}\n\n"
+                return
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 # -----------------------------------------------------------------------------
