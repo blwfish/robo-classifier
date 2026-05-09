@@ -12,6 +12,85 @@
   <nav id="crumbs"></nav>
 </header>
 
+<!-- ============= SCREEN 0: Ingest ============= -->
+<section id="screen-ingest" class="screen" hidden>
+  <div class="toolbar">
+    <h2 style="margin:0">Ingest</h2>
+    <button type="button" id="ingest-to-run">Skip to pipeline →</button>
+  </div>
+
+  <div class="ingest-layout">
+
+    <!-- Sources column -->
+    <div class="ingest-col">
+      <div class="ingest-col-header">
+        <h3>Sources</h3>
+        <button type="button" id="refresh-cards-btn" class="small">Refresh</button>
+      </div>
+      <div id="cards-list"><p class="placeholder">Scanning…</p></div>
+      <button type="button" id="add-local-btn" class="add-local-btn">+ Add local folder</button>
+      <div id="local-browser" class="browser" hidden>
+        <div class="browser-header">
+          <button type="button" id="local-browser-up">↑</button>
+          <span id="local-browser-path" class="browser-path"></span>
+          <button type="button" id="local-browser-use">Use this folder</button>
+          <button type="button" id="local-browser-close">Close</button>
+        </div>
+        <ul id="local-browser-list"></ul>
+      </div>
+    </div>
+
+    <!-- Destination column -->
+    <div class="ingest-col">
+      <div class="ingest-col-header">
+        <h3>Destination</h3>
+      </div>
+      <div class="input-row">
+        <input type="text" id="ingest-dest" placeholder="/Volumes/archive3/images/2026/2026-05-09 Event" />
+        <button type="button" id="ingest-dest-browse-btn" class="small">Browse…</button>
+      </div>
+      <div id="dest-browser" class="browser" hidden>
+        <div class="browser-header">
+          <button type="button" id="dest-browser-up">↑</button>
+          <span id="dest-browser-path" class="browser-path"></span>
+          <span id="dest-browser-stats" class="browser-stats"></span>
+          <button type="button" id="dest-browser-use">Use this folder</button>
+          <button type="button" id="dest-browser-close">Close</button>
+        </div>
+        <ul id="dest-browser-list"></ul>
+      </div>
+      <div id="ingest-recent" class="recent-list"></div>
+    </div>
+
+  </div><!-- .ingest-layout -->
+
+  <div class="ingest-actions">
+    <button type="button" id="ingest-go-btn" class="primary" disabled>Ingest</button>
+    <span id="ingest-source-summary" class="ingest-source-summary"></span>
+  </div>
+
+  <!-- Progress -->
+  <div id="ingest-progress-box" hidden>
+    <h3 id="ingest-progress-stage">Starting…</h3>
+    <progress id="ingest-progress-bar" value="0" max="1"></progress>
+    <div id="ingest-progress-text"></div>
+    <div id="ingest-log" class="ingest-log"></div>
+  </div>
+
+  <!-- Done -->
+  <div id="ingest-done-box" hidden>
+    <div class="ingest-result-row">
+      <span class="stat-copied">Copied: <strong id="ingest-n-copied">0</strong></span>
+      <span class="stat-skipped">Skipped (dup): <strong id="ingest-n-skipped">0</strong></span>
+      <span class="stat-errors">Errors: <strong id="ingest-n-errors">0</strong></span>
+    </div>
+    <div class="row">
+      <button type="button" id="ingest-run-pipeline-btn" class="primary">Run pipeline on this folder →</button>
+      <button type="button" id="ingest-again-btn">Ingest another</button>
+    </div>
+  </div>
+</section>
+
 <!-- ============= SCREEN 1: Run ============= -->
 <section id="screen-run" class="screen">
   <h2>Run pipeline</h2>

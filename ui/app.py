@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from ui import pipeline_runner, review, thumbs
+from ui import ingest_runner, pipeline_runner, review, thumbs
 from image_utils import RAW_EXTENSIONS, JPG_EXTENSIONS
 
 
@@ -514,6 +514,79 @@ def move_to_junk(req: JunkMoveRequest):
     if xmp.exists():
         shutil.move(str(xmp), str(junk_dir / xmp.name))
     return {"ok": True, "moved_to": str(dest)}
+
+
+# -----------------------------------------------------------------------------
+# Ingest
+# -----------------------------------------------------------------------------
+
+class IngestStartRequest(BaseModel):
+    sources: list[dict]   # [{path: str, label: str, force: bool}]
+    dest_dir: str
+
+
+@app.get("/api/ingest/cards")
+def ingest_cards():
+    """Return mounted volumes that contain a DCIM/ folder (camera cards)."""
+    from ingest import detect_cards
+    return {"cards": detect_cards()}
+
+
+@app.get("/api/ingest/scan")
+def ingest_scan(path: str):
+    """Return file count for a source path (card or local folder)."""
+    from ingest import scan_source
+    p = Path(path).expanduser().resolve()
+    if not p.exists():
+        raise HTTPException(404, f"path not found: {p}")
+    files = scan_source(p)
+    return {"path": str(p), "count": len(files)}
+
+
+@app.get("/api/ingest/aliases")
+def ingest_aliases():
+    """Return the camera model alias table so the UI can display it."""
+    from ingest import _MODEL_ALIASES
+    return {"aliases": _MODEL_ALIASES}
+
+
+@app.post("/api/ingest/start")
+def ingest_start(req: IngestStartRequest):
+    dest = Path(req.dest_dir).expanduser()
+    job = ingest_runner.MANAGER.create(req.sources, str(dest))
+    ingest_runner.MANAGER.start(job)
+    return {"job_id": job.id}
+
+
+@app.get("/api/ingest/progress/{job_id}")
+async def ingest_progress(job_id: str, request: Request):
+    job = ingest_runner.MANAGER.get(job_id)
+    if job is None:
+        raise HTTPException(404, "unknown ingest job")
+
+    async def event_stream():
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                event = job.events.get(timeout=0.25)
+            except Exception:
+                if job.status in ("done", "error"):
+                    while not job.events.empty():
+                        ev = job.events.get_nowait()
+                        yield f"data: {json.dumps(ev, default=str)}\n\n"
+                        if ev.get("type") == "__end__":
+                            return
+                    yield f"data: {json.dumps({'type': 'status', 'status': job.status, 'summary': job.summary, 'error': job.error}, default=str)}\n\n"
+                    return
+                yield ": heartbeat\n\n"
+                continue
+            if event.get("type") == "__end__":
+                yield f"data: {json.dumps({'type': 'status', 'status': job.status, 'summary': job.summary, 'error': job.error}, default=str)}\n\n"
+                return
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 # -----------------------------------------------------------------------------

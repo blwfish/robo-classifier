@@ -15,6 +15,7 @@ const state = {
 
 // ====== Screen management ======
 const screens = {
+  ingest:    document.getElementById("screen-ingest"),
   run:       document.getElementById("screen-run"),
   threshold: document.getElementById("screen-threshold"),
   grid:      document.getElementById("screen-grid"),
@@ -143,9 +144,50 @@ async function init() {
   document.getElementById("crop-clear").addEventListener("click", clearCrop);
   document.getElementById("junk-btn").addEventListener("click", junkCurrent);
 
+  // Ingest screen
+  document.getElementById("ingest-to-run").addEventListener("click", () => showScreen("run"));
+  document.getElementById("refresh-cards-btn").addEventListener("click", loadCards);
+  document.getElementById("add-local-btn").addEventListener("click", () => localBrowser.open(""));
+  document.getElementById("ingest-go-btn").addEventListener("click", startIngest);
+  document.getElementById("ingest-dest").addEventListener("input", updateIngestGoBtn);
+  document.getElementById("ingest-again-btn").addEventListener("click", () => {
+    document.getElementById("ingest-progress-box").hidden = true;
+    document.getElementById("ingest-done-box").hidden = true;
+    document.getElementById("ingest-go-btn").disabled = false;
+    initIngest();
+  });
+
+  // Browsers for the ingest screen
+  localBrowser = makeBrowser({
+    panelId: "local-browser", pathId: "local-browser-path",
+    listId: "local-browser-list", upId: "local-browser-up",
+    useId: "local-browser-use", closeId: "local-browser-close",
+    onSelect(path) {
+      const label = path.split("/").pop() || path;
+      ingestState.localSources.push({ path, label });
+      renderLocalSources();
+      updateIngestGoBtn();
+    },
+  });
+  destBrowser = makeBrowser({
+    panelId: "dest-browser", pathId: "dest-browser-path",
+    listId: "dest-browser-list", upId: "dest-browser-up",
+    useId: "dest-browser-use", closeId: "dest-browser-close",
+    onSelect(path) {
+      document.getElementById("ingest-dest").value = path;
+      ingestState.destDir = path;
+      updateIngestGoBtn();
+    },
+  });
+  document.getElementById("ingest-dest-browse-btn").addEventListener("click", () => {
+    const hint = document.getElementById("ingest-dest").value.trim();
+    destBrowser.open(hint || "/Volumes");
+  });
+
   document.addEventListener("keydown", onKey);
 
-  showScreen("run");
+  showScreen("ingest");
+  initIngest();
 }
 
 // ====== Folder browser ======
@@ -1011,5 +1053,316 @@ async function runWriteKeywords(dryRun) {
 window.addEventListener("resize", () => {
   if (!screens.threshold.hidden) drawHistogram();
 });
+
+// ====== Generic folder browser controller ======
+// Drives any {panel, path-display, list, up, use, close} set of elements.
+function makeBrowser({ panelId, pathId, listId, upId, useId, closeId, onSelect }) {
+  const panel   = document.getElementById(panelId);
+  const pathEl  = document.getElementById(pathId);
+  const listEl  = document.getElementById(listId);
+  let currentPath = null;
+
+  async function loadAt(path) {
+    let data;
+    try {
+      data = await api(`/api/ls?path=${encodeURIComponent(path)}`);
+    } catch {
+      try { data = await api("/api/ls"); } catch { return; }
+    }
+    currentPath = data.path;
+    pathEl.textContent = data.path;
+    listEl.innerHTML = "";
+    if (data.dirs.length === 0) {
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = "(no subdirectories)";
+      listEl.appendChild(li);
+    } else {
+      for (const d of data.dirs) {
+        const li = document.createElement("li");
+        li.innerHTML = `<span class="icon">📁</span><span>${d.name}</span>`;
+        li.addEventListener("click", () => loadAt(d.path));
+        listEl.appendChild(li);
+      }
+    }
+  }
+
+  document.getElementById(upId).addEventListener("click", async () => {
+    if (!currentPath) return;
+    const data = await api(`/api/ls?path=${encodeURIComponent(currentPath)}`);
+    if (data.parent) await loadAt(data.parent);
+  });
+  document.getElementById(useId).addEventListener("click", () => {
+    if (currentPath) onSelect(currentPath);
+    panel.hidden = true;
+  });
+  document.getElementById(closeId).addEventListener("click", () => { panel.hidden = true; });
+
+  return {
+    open(hint = "") { panel.hidden = false; loadAt(hint || ""); },
+    close() { panel.hidden = true; },
+  };
+}
+
+// ====== Ingest screen ======
+
+let localBrowser = null;
+let destBrowser  = null;
+
+const ingestState = {
+  selectedCards: new Set(),   // card paths currently checked
+  forcedCards:   new Set(),   // card paths with "re-ingest" checked
+  localSources:  [],          // [{path, label}] added via local folder picker
+};
+
+function getRecentDests() {
+  try { return JSON.parse(localStorage.getItem("robo.recentDests") || "[]"); }
+  catch { return []; }
+}
+function addRecentDest(path) {
+  const list = getRecentDests().filter(p => p !== path);
+  list.unshift(path);
+  localStorage.setItem("robo.recentDests", JSON.stringify(list.slice(0, 5)));
+}
+
+async function initIngest() {
+  ingestState.selectedCards.clear();
+  ingestState.forcedCards.clear();
+  ingestState.localSources = [];
+  await loadCards();
+  renderRecentDests();
+  updateIngestGoBtn();
+}
+
+async function loadCards() {
+  const listEl = document.getElementById("cards-list");
+  listEl.innerHTML = "<p class='placeholder'>Scanning for cards…</p>";
+  try {
+    const { cards } = await api("/api/ingest/cards");
+    renderCards(cards);
+  } catch (e) {
+    listEl.innerHTML = `<p class='placeholder'>Error: ${e.message}</p>`;
+  }
+}
+
+function renderCards(cards) {
+  const listEl = document.getElementById("cards-list");
+  listEl.innerHTML = "";
+
+  if (cards.length === 0) {
+    listEl.innerHTML = "<p class='placeholder'>No camera cards detected. Insert a card or use + Add local folder below.</p>";
+  }
+
+  for (const card of cards) {
+    const row = document.createElement("div");
+    row.className = "card-row";
+    row.innerHTML = `
+      <label class="card-label">
+        <input type="checkbox" class="card-check" />
+        <span class="card-name">${card.name}</span>
+        <span class="card-count">${card.file_count.toLocaleString()} files</span>
+      </label>
+      <label class="force-label" title="Re-copy files already in the manifest">
+        <input type="checkbox" class="card-force" />
+        re-ingest
+      </label>
+    `;
+    const check = row.querySelector(".card-check");
+    const force = row.querySelector(".card-force");
+    check.addEventListener("change", () => {
+      if (check.checked) ingestState.selectedCards.add(card.path);
+      else { ingestState.selectedCards.delete(card.path); ingestState.forcedCards.delete(card.path); }
+      force.disabled = !check.checked;
+      updateIngestGoBtn();
+    });
+    force.disabled = true;
+    force.addEventListener("change", () => {
+      if (force.checked) ingestState.forcedCards.add(card.path);
+      else ingestState.forcedCards.delete(card.path);
+    });
+    listEl.appendChild(row);
+  }
+}
+
+function renderLocalSources() {
+  // Re-render the local-sources list below the cards list.
+  let localEl = document.getElementById("local-sources-list");
+  if (!localEl) {
+    localEl = document.createElement("div");
+    localEl.id = "local-sources-list";
+    document.getElementById("cards-list").after(localEl);
+  }
+  localEl.innerHTML = "";
+  for (const [i, src] of ingestState.localSources.entries()) {
+    const row = document.createElement("div");
+    row.className = "card-row local-source-row";
+    row.innerHTML = `
+      <span class="card-name">📂 ${src.label}</span>
+      <button type="button" class="remove-local small" data-idx="${i}">✕</button>
+    `;
+    row.querySelector(".remove-local").addEventListener("click", () => {
+      ingestState.localSources.splice(i, 1);
+      renderLocalSources();
+      updateIngestGoBtn();
+    });
+    localEl.appendChild(row);
+  }
+}
+
+function renderRecentDests() {
+  const el = document.getElementById("ingest-recent");
+  const recent = getRecentDests();
+  el.innerHTML = "";
+  if (recent.length === 0) return;
+  const label = document.createElement("div");
+  label.className = "recent-label";
+  label.textContent = "Recent:";
+  el.appendChild(label);
+  for (const path of recent) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "recent-item";
+    btn.textContent = path;
+    btn.title = path;
+    btn.addEventListener("click", () => {
+      document.getElementById("ingest-dest").value = path;
+      ingestState.destDir = path;
+      updateIngestGoBtn();
+    });
+    el.appendChild(btn);
+  }
+}
+
+function updateIngestGoBtn() {
+  const hasSources = ingestState.selectedCards.size > 0 || ingestState.localSources.length > 0;
+  const hasDest = !!document.getElementById("ingest-dest").value.trim();
+  document.getElementById("ingest-go-btn").disabled = !(hasSources && hasDest);
+
+  const total = ingestState.selectedCards.size + ingestState.localSources.length;
+  document.getElementById("ingest-source-summary").textContent =
+    total > 0 ? `${total} source${total === 1 ? "" : "s"} selected` : "";
+}
+
+async function startIngest() {
+  const dest = document.getElementById("ingest-dest").value.trim();
+  if (!dest) return;
+
+  const sources = [];
+  for (const path of ingestState.selectedCards) {
+    sources.push({
+      path,
+      label: path.split("/").pop() || path,
+      force: ingestState.forcedCards.has(path),
+    });
+  }
+  for (const src of ingestState.localSources) {
+    sources.push({ path: src.path, label: src.label, force: false });
+  }
+  if (sources.length === 0) return;
+
+  addRecentDest(dest);
+  ingestState.destDir = dest;
+
+  document.getElementById("ingest-go-btn").disabled = true;
+  document.getElementById("ingest-progress-box").hidden = false;
+  document.getElementById("ingest-done-box").hidden = true;
+  document.getElementById("ingest-log").textContent = "";
+  document.getElementById("ingest-progress-bar").value = 0;
+  document.getElementById("ingest-progress-stage").textContent = "Starting…";
+
+  try {
+    const { job_id } = await apiPost("/api/ingest/start", { sources, dest_dir: dest });
+    streamIngestProgress(job_id, dest);
+  } catch (e) {
+    document.getElementById("ingest-progress-stage").textContent = `Error: ${e.message}`;
+    document.getElementById("ingest-go-btn").disabled = false;
+  }
+}
+
+function streamIngestProgress(jobId, destDir) {
+  const es = new EventSource(`/api/ingest/progress/${jobId}`);
+  const stageEl = document.getElementById("ingest-progress-stage");
+  const barEl   = document.getElementById("ingest-progress-bar");
+  const logEl   = document.getElementById("ingest-log");
+
+  const LOG_CAP = 300;
+  let logLines = [];
+  let logTimer = null;
+
+  function flushLog() {
+    logTimer = null;
+    if (logLines.length > LOG_CAP) logLines = logLines.slice(-LOG_CAP);
+    logEl.textContent = logLines.join("\n");
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function appendLog(line) {
+    logLines.push(line);
+    if (!logTimer) logTimer = setTimeout(flushLog, 150);
+  }
+
+  let skippedCount = 0;
+
+  es.onmessage = (ev) => {
+    let event;
+    try { event = JSON.parse(ev.data); } catch { return; }
+    const t = event.type;
+
+    if (t === "scan_start") {
+      stageEl.textContent = `Scanning ${event.source}…`;
+    } else if (t === "scan_done") {
+      appendLog(`Scanned ${event.source}: ${event.count.toLocaleString()} files`);
+    } else if (t === "exif_start") {
+      stageEl.textContent = `Reading EXIF from ${event.total.toLocaleString()} files…`;
+    } else if (t === "progress" && event.stage === "copy") {
+      stageEl.textContent = `Copying ${event.done.toLocaleString()} / ${event.total.toLocaleString()}`;
+      barEl.max   = event.total;
+      barEl.value = event.done;
+    } else if (t === "file_result") {
+      if (event.status === "copied") {
+        appendLog(`→ ${event.dest}`);
+      } else if (event.status === "skipped") {
+        skippedCount++;
+        if (skippedCount <= 3) appendLog(`  skip ${event.filename} (dup)`);
+        else if (skippedCount === 4) appendLog(`  … (more skipped)`);
+      } else if (event.status === "error") {
+        appendLog(`ERROR ${event.filename}: ${event.reason}`);
+      }
+    } else if (t === "status") {
+      es.close();
+      if (logTimer) { clearTimeout(logTimer); flushLog(); }
+      if (event.status === "done" && event.summary) {
+        const s = event.summary;
+        barEl.value = barEl.max;
+        stageEl.textContent =
+          `Done — ${s.copied.toLocaleString()} copied` +
+          (s.skipped ? `, ${s.skipped.toLocaleString()} skipped` : "") +
+          (s.errors  ? `, ${s.errors} errors` : "");
+        showIngestDone(s, destDir);
+      } else {
+        stageEl.textContent = `Error: ${event.error || "unknown"}`;
+        document.getElementById("ingest-go-btn").disabled = false;
+      }
+    }
+  };
+
+  es.onerror = () => {
+    es.close();
+    document.getElementById("ingest-go-btn").disabled = false;
+  };
+}
+
+function showIngestDone(summary, destDir) {
+  document.getElementById("ingest-n-copied").textContent  = summary.copied.toLocaleString();
+  document.getElementById("ingest-n-skipped").textContent = summary.skipped.toLocaleString();
+  document.getElementById("ingest-n-errors").textContent  = summary.errors;
+  document.getElementById("ingest-done-box").hidden = false;
+
+  document.getElementById("ingest-run-pipeline-btn").onclick = () => {
+    document.getElementById("input_dir").value = destDir;
+    localStorage.setItem("robo.lastInputDir", destDir);
+    state.inputDir = destDir;
+    showScreen("run");
+  };
+}
 
 init();
