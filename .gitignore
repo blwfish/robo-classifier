@@ -9,8 +9,7 @@ reject/
 select/
 test-*/
 *.csv
-results.csv
-winners.csv
+*.txt
 *.pt
 model.pt
 
