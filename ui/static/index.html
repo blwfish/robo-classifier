@@ -11,15 +11,46 @@
 </head>
 <body>
 <header>
-  <h1>robo-classifier</h1>
-  <nav id="crumbs"></nav>
-  <select id="theme-select" class="theme-select" title="UI theme">
-    <option value="modern">Modern</option>
-    <option value="deco">Tasteful Deco</option>
-    <option value="full-deco">Full Deco</option>
-  </select>
-  <button type="button" id="library-btn" class="settings-btn" title="Model library">⊞</button>
-  <button type="button" id="settings-btn" class="settings-btn" title="Settings">⚙</button>
+  <span class="app-wordmark">robo-classifier</span>
+  <nav class="menubar" id="menubar">
+
+    <div class="menu">
+      <button class="menu-label">File</button>
+      <ul class="menu-dropdown">
+        <li><button class="menu-item" id="menu-open-ingest">Open / Ingest…</button></li>
+        <li><button class="menu-item" id="menu-open-run">Run Pipeline…</button></li>
+        <li class="menu-sep" role="separator"></li>
+        <li><button class="menu-item" id="settings-btn">Settings</button></li>
+      </ul>
+    </div>
+
+    <div class="menu">
+      <button class="menu-label">Library</button>
+      <ul class="menu-dropdown">
+        <li><button class="menu-item" id="library-btn">Model Library</button></li>
+        <li><button class="menu-item" id="menu-open-train">Train…</button></li>
+      </ul>
+    </div>
+
+    <div class="menu">
+      <button class="menu-label">View</button>
+      <ul class="menu-dropdown">
+        <li class="menu-section-head">Theme</li>
+        <li><button class="menu-item theme-opt" data-theme-val="modern">Modern</button></li>
+        <li><button class="menu-item theme-opt" data-theme-val="deco">Tasteful Deco</button></li>
+        <li><button class="menu-item theme-opt" data-theme-val="full-deco">Full Deco</button></li>
+      </ul>
+    </div>
+
+    <div class="menu">
+      <button class="menu-label">Help</button>
+      <ul class="menu-dropdown">
+        <li><button class="menu-item" id="menu-shortcuts">Keyboard Shortcuts</button></li>
+      </ul>
+    </div>
+
+  </nav>
+  <span id="crumbs" class="app-crumbs"></span>
 </header>
 
 <!-- ============= SCREEN: Library ============= -->

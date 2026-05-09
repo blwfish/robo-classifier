@@ -66,17 +66,49 @@ function apiPost(path, body) {
 (function () {
   const THEMES = ["modern", "deco", "full-deco"];
   const saved = localStorage.getItem("robo.theme") || "modern";
-  const theme = THEMES.includes(saved) ? saved : "modern";
-  document.documentElement.setAttribute("data-theme", theme);
+  const active = THEMES.includes(saved) ? saved : "modern";
+  document.documentElement.setAttribute("data-theme", active);
 
-  const sel = document.getElementById("theme-select");
-  if (sel) {
-    sel.value = theme;
-    sel.addEventListener("change", () => {
-      document.documentElement.setAttribute("data-theme", sel.value);
-      localStorage.setItem("robo.theme", sel.value);
-    });
+  function applyTheme(t) {
+    document.documentElement.setAttribute("data-theme", t);
+    localStorage.setItem("robo.theme", t);
+    document.querySelectorAll(".theme-opt").forEach(btn =>
+      btn.classList.toggle("checked", btn.dataset.themeVal === t)
+    );
   }
+  applyTheme(active);
+
+  document.querySelectorAll(".theme-opt").forEach(btn =>
+    btn.addEventListener("click", () => applyTheme(btn.dataset.themeVal))
+  );
+})();
+
+// ====== Menubar ======
+(function () {
+  const menubar = document.getElementById("menubar");
+  if (!menubar) return;
+
+  function closeAll() {
+    menubar.querySelectorAll(".menu.open").forEach(m => m.classList.remove("open"));
+  }
+
+  menubar.addEventListener("click", e => {
+    const label = e.target.closest(".menu-label");
+    if (!label) return;
+    const menu = label.closest(".menu");
+    const wasOpen = menu.classList.contains("open");
+    closeAll();
+    if (!wasOpen) menu.classList.add("open");
+    e.stopPropagation();
+  });
+
+  // Close when a menu item is activated
+  menubar.addEventListener("click", e => {
+    if (e.target.closest(".menu-item")) closeAll();
+  });
+
+  document.addEventListener("click", closeAll);
+  document.addEventListener("keydown", e => { if (e.key === "Escape") closeAll(); });
 })();
 
 // ====== Init ======
@@ -248,6 +280,14 @@ async function init() {
   // Settings screen
   document.getElementById("settings-btn").addEventListener("click", openSettings);
   document.getElementById("settings-back").addEventListener("click", () => showScreen(state.prevScreen || "ingest"));
+
+  // Menu nav items
+  document.getElementById("menu-open-ingest").addEventListener("click", () => showScreen("ingest"));
+  document.getElementById("menu-open-run").addEventListener("click", () => showScreen("run"));
+  document.getElementById("menu-open-train").addEventListener("click", () => showScreen("train"));
+  document.getElementById("menu-shortcuts").addEventListener("click", () =>
+    flashToast("← → nav  •  C crop  •  L level  •  1–5 labels  •  Esc grid", 4000)
+  );
   document.getElementById("cfg-save-btn").addEventListener("click", saveConfig);
   document.querySelectorAll(".cfg-browse-btn").forEach(btn =>
     btn.addEventListener("click", () => cfgBrowser.open(""))
