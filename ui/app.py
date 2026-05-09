@@ -221,6 +221,7 @@ def list_profiles():
                 "description": meta.get("description", ""),
                 "trained_at": meta.get("trained_at", ""),
                 "library": str(models_dir),
+                "is_default": pt.stem == app_config.default_profile,
             })
 
     # Legacy: bare model.pt in repo root
@@ -730,6 +731,122 @@ async def ingest_progress(job_id: str, request: Request):
             yield f"data: {json.dumps(event, default=str)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# -----------------------------------------------------------------------------
+# Library management
+# -----------------------------------------------------------------------------
+
+def _library_dir() -> Path:
+    lib = app_config.model_library
+    if not lib or not lib.exists():
+        raise HTTPException(400, "model_library not configured or missing")
+    return lib
+
+
+def _read_sidecar(pt: Path) -> dict:
+    sidecar = pt.with_suffix(".json")
+    if sidecar.exists():
+        try:
+            return json.loads(sidecar.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _write_sidecar_fields(pt: Path, updates: dict) -> None:
+    sidecar = pt.with_suffix(".json")
+    data = _read_sidecar(pt)
+    data.update(updates)
+    sidecar.write_text(json.dumps(data, indent=2))
+
+
+@app.get("/api/library")
+def library_list():
+    lib = _library_dir()
+    default = app_config.default_profile
+    models = []
+    for pt in sorted(lib.glob("*.pt")):
+        meta = _read_sidecar(pt)
+        models.append({
+            "name":        pt.stem,
+            "best_acc":    meta.get("best_acc"),
+            "trained_at":  meta.get("trained_at", ""),
+            "description": meta.get("description", ""),
+            "notes":       meta.get("notes", ""),
+            "is_default":  pt.stem == default,
+        })
+    return {"models": models, "default": default}
+
+
+class LibraryPatchRequest(BaseModel):
+    notes: str | None = None
+    description: str | None = None
+
+
+@app.patch("/api/library/{name}")
+def library_patch(name: str, req: LibraryPatchRequest):
+    lib = _library_dir()
+    pt = lib / f"{name}.pt"
+    if not pt.exists():
+        raise HTTPException(404, f"model not found: {name}")
+    updates = {}
+    if req.notes is not None:
+        updates["notes"] = req.notes
+    if req.description is not None:
+        updates["description"] = req.description
+    if updates:
+        _write_sidecar_fields(pt, updates)
+    return {"ok": True}
+
+
+class LibraryRenameRequest(BaseModel):
+    new_name: str
+
+
+@app.post("/api/library/{name}/rename")
+def library_rename(name: str, req: LibraryRenameRequest):
+    lib = _library_dir()
+    new_name = req.new_name.strip()
+    if not new_name or "/" in new_name or "\\" in new_name:
+        raise HTTPException(400, "invalid name")
+    pt = lib / f"{name}.pt"
+    if not pt.exists():
+        raise HTTPException(404, f"model not found: {name}")
+    new_pt = lib / f"{new_name}.pt"
+    if new_pt.exists():
+        raise HTTPException(409, f"model already exists: {new_name}")
+    pt.rename(new_pt)
+    old_sidecar = lib / f"{name}.json"
+    if old_sidecar.exists():
+        old_sidecar.rename(lib / f"{new_name}.json")
+    if app_config.default_profile == name:
+        app_config.set("default_profile", new_name)
+    return {"ok": True}
+
+
+@app.post("/api/library/{name}/default")
+def library_set_default(name: str):
+    lib = _library_dir()
+    if not (lib / f"{name}.pt").exists():
+        raise HTTPException(404, f"model not found: {name}")
+    app_config.set("default_profile", name)
+    return {"ok": True, "default": name}
+
+
+@app.delete("/api/library/{name}")
+def library_delete(name: str):
+    lib = _library_dir()
+    pt = lib / f"{name}.pt"
+    if not pt.exists():
+        raise HTTPException(404, f"model not found: {name}")
+    pt.unlink()
+    sidecar = lib / f"{name}.json"
+    if sidecar.exists():
+        sidecar.unlink()
+    if app_config.default_profile == name:
+        app_config.set("default_profile", "")
+    return {"ok": True}
 
 
 # -----------------------------------------------------------------------------

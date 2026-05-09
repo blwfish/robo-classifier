@@ -17,6 +17,7 @@ const state = {
 
 // ====== Screen management ======
 const screens = {
+  library:   document.getElementById("screen-library"),
   settings:  document.getElementById("screen-settings"),
   train:     document.getElementById("screen-train"),
   ingest:    document.getElementById("screen-ingest"),
@@ -221,6 +222,11 @@ async function init() {
     // Reload profiles and switch to run screen
     refreshProfiles().then(() => showScreen("run"));
   });
+
+  // Library screen
+  document.getElementById("library-btn").addEventListener("click", openLibrary);
+  document.getElementById("library-back").addEventListener("click", () => showScreen(state.prevScreen || "ingest"));
+  document.getElementById("library-go-settings").addEventListener("click", openSettings);
 
   // Settings screen
   document.getElementById("settings-btn").addEventListener("click", openSettings);
@@ -1566,6 +1572,143 @@ function streamTrainProgress(jobId, totalEpochs) {
 
 let cfgBrowser = null;
 
+// ── Library ──────────────────────────────────────────────────────────────────
+
+async function openLibrary() {
+  state.prevScreen = Object.entries(screens).find(([, el]) => !el.hidden)?.[0] || "ingest";
+  showScreen("library");
+  await loadLibrary();
+}
+
+async function loadLibrary() {
+  const listEl  = document.getElementById("library-list");
+  const emptyEl = document.getElementById("library-empty");
+  const bannerEl = document.getElementById("library-missing-banner");
+  listEl.innerHTML = "";
+  try {
+    const { models, default: defaultName } = await api("/api/library");
+    bannerEl.hidden = true;
+    emptyEl.hidden = models.length > 0;
+    listEl.hidden  = models.length === 0;
+    models.forEach(m => listEl.appendChild(makeModelCard(m, defaultName)));
+  } catch (e) {
+    if (e.message && e.message.includes("not configured")) {
+      bannerEl.hidden = false;
+      emptyEl.hidden = true;
+      listEl.hidden = true;
+    } else {
+      listEl.innerHTML = `<p class="placeholder">Error: ${e.message}</p>`;
+    }
+  }
+}
+
+function makeModelCard(m, defaultName) {
+  const card = document.createElement("div");
+  card.className = "model-card" + (m.is_default ? " is-default" : "");
+  card.dataset.name = m.name;
+
+  const acc  = m.best_acc != null ? `${m.best_acc.toFixed(1)}%` : "—";
+  const date = m.trained_at ? m.trained_at.slice(0, 10) : "";
+
+  card.innerHTML = `
+    <div class="model-card-top">
+      <span class="model-name" title="Double-click to rename">${esc(m.name)}</span>
+      <span class="model-acc">${acc}</span>
+      <span class="model-date">${date}</span>
+      <button class="model-default-btn${m.is_default ? " active" : ""}" title="${m.is_default ? "Default model" : "Set as default"}">★</button>
+      <button class="model-delete-btn" title="Delete">✕</button>
+    </div>
+    ${m.description ? `<div class="model-desc">${esc(m.description)}</div>` : ""}
+    <div class="model-notes-row">
+      <textarea class="model-notes" placeholder="Notes…" rows="2">${esc(m.notes || "")}</textarea>
+      <button class="model-notes-save small" hidden>Save</button>
+    </div>`;
+
+  // Rename on double-click
+  const nameEl = card.querySelector(".model-name");
+  nameEl.addEventListener("dblclick", () => startRename(card, m.name));
+
+  // Default button
+  card.querySelector(".model-default-btn").addEventListener("click", async () => {
+    await apiPost(`/api/library/${encodeURIComponent(m.name)}/default`, {});
+    await loadLibrary();
+    await refreshProfiles();
+  });
+
+  // Delete button
+  card.querySelector(".model-delete-btn").addEventListener("click", async () => {
+    if (!confirm(`Delete model "${m.name}"? This cannot be undone.`)) return;
+    await apiDelete(`/api/library/${encodeURIComponent(m.name)}`);
+    await loadLibrary();
+    await refreshProfiles();
+  });
+
+  // Notes save
+  const notesEl = card.querySelector(".model-notes");
+  const saveBtn = card.querySelector(".model-notes-save");
+  notesEl.addEventListener("input", () => { saveBtn.hidden = false; });
+  saveBtn.addEventListener("click", async () => {
+    await apiPatch(`/api/library/${encodeURIComponent(m.name)}`, { notes: notesEl.value });
+    saveBtn.hidden = true;
+    saveBtn.textContent = "Saved";
+    setTimeout(() => { saveBtn.textContent = "Save"; }, 1500);
+  });
+
+  return card;
+}
+
+function startRename(card, oldName) {
+  const nameEl = card.querySelector(".model-name");
+  const orig = nameEl.textContent;
+  nameEl.contentEditable = "true";
+  nameEl.focus();
+  const range = document.createRange();
+  range.selectNodeContents(nameEl);
+  window.getSelection().removeAllRanges();
+  window.getSelection().addRange(range);
+
+  async function commit() {
+    nameEl.contentEditable = "false";
+    const newName = nameEl.textContent.trim();
+    if (!newName || newName === oldName) { nameEl.textContent = orig; return; }
+    try {
+      await apiPost(`/api/library/${encodeURIComponent(oldName)}/rename`, { new_name: newName });
+      await loadLibrary();
+      await refreshProfiles();
+    } catch (e) {
+      nameEl.textContent = orig;
+      flashToast(e.message || "Rename failed");
+    }
+  }
+  nameEl.addEventListener("blur", commit, { once: true });
+  nameEl.addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); nameEl.blur(); }
+    if (e.key === "Escape") { nameEl.textContent = orig; nameEl.contentEditable = "false"; }
+  }, { once: true });
+}
+
+// Generic DELETE and PATCH wrappers (api/apiPost already exist)
+async function apiPatch(path, body) {
+  const r = await fetch(path, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+  return r.json();
+}
+async function apiDelete(path) {
+  const r = await fetch(path, { method: "DELETE" });
+  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+  return r.json();
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function openSettings() {
   state.prevScreen = Object.entries(screens).find(([, el]) => !el.hidden)?.[0] || "ingest";
   showScreen("settings");
@@ -1627,8 +1770,13 @@ async function refreshProfiles() {
         select.appendChild(opt);
       }
     }
-    // Restore previous selection if still present
-    if ([...select.options].some(o => o.value === cur)) select.value = cur;
+    // Restore previous selection; fall back to default profile, then first
+    if ([...select.options].some(o => o.value === cur)) {
+      select.value = cur;
+    } else {
+      const def = profiles.find(p => p.is_default);
+      if (def) select.value = def.name === "(default)" ? "" : def.name;
+    }
   } catch { /* ignore */ }
 }
 

@@ -10,8 +10,24 @@
 <header>
   <h1>robo-classifier</h1>
   <nav id="crumbs"></nav>
+  <button type="button" id="library-btn" class="settings-btn" title="Model library">⊞</button>
   <button type="button" id="settings-btn" class="settings-btn" title="Settings">⚙</button>
 </header>
+
+<!-- ============= SCREEN: Library ============= -->
+<section id="screen-library" class="screen" hidden>
+  <div class="toolbar">
+    <h2 style="margin:0">Model library</h2>
+    <button type="button" id="library-back">← Back</button>
+  </div>
+
+  <div id="library-missing-banner" class="config-banner" hidden>
+    Model library path is not configured. <button type="button" id="library-go-settings">Open Settings</button>
+  </div>
+
+  <div id="library-empty" class="placeholder" hidden>No models in library yet. Train one first.</div>
+  <div id="library-list" class="library-list"></div>
+</section>
 
 <!-- ============= SCREEN: Settings ============= -->
 <section id="screen-settings" class="screen" hidden>

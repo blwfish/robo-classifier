@@ -25,8 +25,9 @@ CONFIG_PATH = Path.home() / ".robo-classifier" / "config.toml"
 
 # Keys the app cares about, with human labels and whether they're required.
 _FIELDS = {
-    "model_library":   {"label": "Model library",    "required": True},
-    "dataset_scratch": {"label": "Dataset scratch",  "required": True},
+    "model_library":    {"label": "Model library",    "required": True},
+    "dataset_scratch":  {"label": "Dataset scratch",  "required": True},
+    "default_profile":  {"label": "Default profile",  "required": False},
 }
 
 
@@ -46,6 +47,11 @@ class AppConfig:
     def dataset_scratch(self) -> Optional[Path]:
         v = self._data.get("dataset_scratch", "").strip()
         return Path(v).expanduser() if v else None
+
+    @property
+    def default_profile(self) -> Optional[str]:
+        v = self._data.get("default_profile", "").strip()
+        return v or None
 
     def get(self, key: str) -> str:
         return self._data.get(key, "")
