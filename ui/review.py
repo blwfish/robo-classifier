@@ -106,12 +106,12 @@ def set_crop(source: Path, left: float, top: float, right: float, bottom: float,
     target, needs_create = _target_for_write(source)
 
     args = [
-        '-crs:HasCrop=true',
-        f'-crs:CropLeft={left:.6f}',
-        f'-crs:CropTop={top:.6f}',
-        f'-crs:CropRight={right:.6f}',
-        f'-crs:CropBottom={bottom:.6f}',
-        f'-crs:CropAngle={angle:.2f}',
+        '-XMP-crs:HasCrop=true',
+        f'-XMP-crs:CropLeft={left:.6f}',
+        f'-XMP-crs:CropTop={top:.6f}',
+        f'-XMP-crs:CropRight={right:.6f}',
+        f'-XMP-crs:CropBottom={bottom:.6f}',
+        f'-XMP-crs:CropAngle={angle:.2f}',
     ]
 
     if needs_create:
@@ -130,12 +130,12 @@ def clear_crop(source: Path) -> tuple[bool, str]:
     if needs_create:
         return True, "no crop to clear (no sidecar)"
     return _run_exiftool([
-        '-crs:HasCrop=',
-        '-crs:CropLeft=',
-        '-crs:CropTop=',
-        '-crs:CropRight=',
-        '-crs:CropBottom=',
-        '-crs:CropAngle=',
+        '-XMP-crs:HasCrop=',
+        '-XMP-crs:CropLeft=',
+        '-XMP-crs:CropTop=',
+        '-XMP-crs:CropRight=',
+        '-XMP-crs:CropBottom=',
+        '-XMP-crs:CropAngle=',
         str(target),
     ])
 
@@ -154,10 +154,10 @@ def read_state(source: Path) -> dict:
             [
                 'exiftool', '-json',
                 '-xmp:Label',
-                '-crs:HasCrop',
-                '-crs:CropLeft', '-crs:CropTop',
-                '-crs:CropRight', '-crs:CropBottom',
-                '-crs:CropAngle',
+                '-XMP-crs:HasCrop',
+                '-XMP-crs:CropLeft', '-XMP-crs:CropTop',
+                '-XMP-crs:CropRight', '-XMP-crs:CropBottom',
+                '-XMP-crs:CropAngle',
                 str(target),
             ],
             capture_output=True, text=True,
