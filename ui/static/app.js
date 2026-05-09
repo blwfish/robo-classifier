@@ -191,6 +191,9 @@ async function init() {
     trainRejectBrowser.open(hint);
   });
   document.getElementById("train-model-name").addEventListener("input", updateTrainGoBtn);
+  ["train-epochs", "train-lr", "train-batch", "train-test-split"].forEach(id => {
+    document.getElementById(id).addEventListener("change", saveTrainHyperparams);
+  });
   document.getElementById("train-use-model-btn").addEventListener("click", () => {
     // Reload profiles and switch to run screen
     refreshProfiles().then(() => showScreen("run"));
@@ -1252,9 +1255,18 @@ function makeBrowser({ panelId, pathId, listId, upId, useId, closeId, onSelect }
 let trainSelectBrowser = null;
 let trainRejectBrowser = null;
 
-// Per-machine recent dirs for select/reject (localStorage, last 1 each — simple)
+// Per-machine persistence for train dirs and hyperparams
 function saveTrainRecentDir(which, path) {
   localStorage.setItem(`robo.train.recent${which.charAt(0).toUpperCase() + which.slice(1)}`, path);
+}
+
+function saveTrainHyperparams() {
+  localStorage.setItem("robo.train.hyperparams", JSON.stringify({
+    epochs:    document.getElementById("train-epochs").value,
+    lr:        document.getElementById("train-lr").value,
+    batch:     document.getElementById("train-batch").value,
+    testSplit: document.getElementById("train-test-split").value,
+  }));
 }
 
 function updateTrainGoBtn() {
@@ -1287,9 +1299,15 @@ async function openTrainScreen() {
   // Restore last-used dirs
   const lastSel = localStorage.getItem("robo.train.recentSelect") || "";
   const lastRej = localStorage.getItem("robo.train.recentReject") || "";
-  if (lastSel) document.getElementById("train-select-dir").value = lastSel;
-  if (lastRej) document.getElementById("train-reject-dir").value = lastRej;
-  if (lastSel && lastRej) updateTrainDataCount("select", lastSel);
+  if (lastSel) { document.getElementById("train-select-dir").value = lastSel; updateTrainDataCount("select", lastSel); }
+  if (lastRej) { document.getElementById("train-reject-dir").value = lastRej; updateTrainDataCount("reject", lastRej); }
+
+  // Restore last-used hyperparams
+  const hp = JSON.parse(localStorage.getItem("robo.train.hyperparams") || "{}");
+  if (hp.epochs    != null) document.getElementById("train-epochs").value    = hp.epochs;
+  if (hp.lr        != null) document.getElementById("train-lr").value        = hp.lr;
+  if (hp.batch     != null) document.getElementById("train-batch").value     = hp.batch;
+  if (hp.testSplit != null) document.getElementById("train-test-split").value = hp.testSplit;
 
   resetTrainScreen(/*keepDirs=*/true);
   showScreen("train");
@@ -1586,6 +1604,11 @@ async function initIngest() {
   ingestState.localSources = [];
   await loadCards();
   renderRecentDests();
+  // Pre-populate dest with most recently used path
+  const recents = getRecentDests();
+  if (recents.length > 0 && !document.getElementById("ingest-dest").value.trim()) {
+    document.getElementById("ingest-dest").value = recents[0];
+  }
   updateIngestGoBtn();
 }
 
