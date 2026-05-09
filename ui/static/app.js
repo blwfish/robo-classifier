@@ -62,6 +62,23 @@ function apiPost(path, body) {
   });
 }
 
+// ====== Theme ======
+(function () {
+  const THEMES = ["modern", "deco", "full-deco"];
+  const saved = localStorage.getItem("robo.theme") || "modern";
+  const theme = THEMES.includes(saved) ? saved : "modern";
+  document.documentElement.setAttribute("data-theme", theme);
+
+  const sel = document.getElementById("theme-select");
+  if (sel) {
+    sel.value = theme;
+    sel.addEventListener("change", () => {
+      document.documentElement.setAttribute("data-theme", sel.value);
+      localStorage.setItem("robo.theme", sel.value);
+    });
+  }
+})();
+
 // ====== Init ======
 async function init() {
   // Load profiles

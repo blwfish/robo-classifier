@@ -1,24 +1,131 @@
+/* ── Design tokens ───────────────────────────────────────────────────────── */
+
+[data-theme="modern"] {
+  --bg:           oklch(0.14 0.005 250);
+  --c-00:         oklch(0.10 0.004 250);
+  --c-05:         oklch(0.14 0.005 250);
+  --c-10:         oklch(0.17 0.005 250);
+  --c-15:         oklch(0.20 0.005 250);
+  --c-20:         oklch(0.24 0.005 250);
+  --c-25:         oklch(0.28 0.005 250);
+  --c-40:         oklch(0.40 0.005 250);
+  --c-70:         oklch(0.70 0.005 250);
+  --c-95:         oklch(0.95 0.004 250);
+  --line:         oklch(1 0 0 / 0.07);
+  --line-strong:  oklch(1 0 0 / 0.12);
+  --accent:       oklch(0.80 0.14 75);
+  --accent-soft:  oklch(0.80 0.14 75 / 0.18);
+  --accent-quiet: oklch(0.80 0.14 75 / 0.08);
+  --accent-ink:   oklch(0.18 0.05 75);
+  --pos:          oklch(0.74 0.14 145);
+  --neg:          oklch(0.66 0.18 25);
+  --info:         oklch(0.72 0.10 235);
+  --text:         oklch(0.95 0.004 250);
+  --text-2:       oklch(0.70 0.005 250);
+  --text-3:       oklch(0.55 0.005 250);
+  --font-ui:      "Inter Tight", system-ui, sans-serif;
+  --font-mono:    "JetBrains Mono", ui-monospace, monospace;
+  --font-display: "Inter Tight", system-ui, sans-serif;
+  --r-1:          2px;
+  --r-2:          4px;
+}
+
+[data-theme="deco"] {
+  --bg:           oklch(0.12 0.005 65);
+  --c-00:         oklch(0.08 0.004 65);
+  --c-05:         oklch(0.12 0.005 65);
+  --c-10:         oklch(0.16 0.005 65);
+  --c-15:         oklch(0.19 0.006 65);
+  --c-20:         oklch(0.23 0.006 65);
+  --c-25:         oklch(0.28 0.006 65);
+  --c-40:         oklch(0.40 0.006 65);
+  --c-70:         oklch(0.72 0.008 65);
+  --c-95:         oklch(0.94 0.010 65);
+  --line:         oklch(0.78 0.06 80 / 0.14);
+  --line-strong:  oklch(0.78 0.06 80 / 0.32);
+  --accent:       oklch(0.78 0.07 80);
+  --accent-soft:  oklch(0.78 0.07 80 / 0.16);
+  --accent-quiet: oklch(0.78 0.07 80 / 0.08);
+  --accent-ink:   oklch(0.16 0.03 60);
+  --pos:          oklch(0.74 0.10 145);
+  --neg:          oklch(0.66 0.14 25);
+  --info:         oklch(0.72 0.07 235);
+  --text:         oklch(0.94 0.010 65);
+  --text-2:       oklch(0.72 0.008 65);
+  --text-3:       oklch(0.55 0.008 65);
+  --font-ui:      "Inter Tight", system-ui, sans-serif;
+  --font-mono:    "JetBrains Mono", ui-monospace, monospace;
+  --font-display: "Poiret One", "Italiana", serif;
+  --r-1:          0px;
+  --r-2:          0px;
+}
+
+[data-theme="full-deco"] {
+  --bg:           oklch(0.09 0.006 60);
+  --c-00:         oklch(0.06 0.005 60);
+  --c-05:         oklch(0.09 0.006 60);
+  --c-10:         oklch(0.13 0.007 60);
+  --c-15:         oklch(0.17 0.007 60);
+  --c-20:         oklch(0.21 0.007 60);
+  --c-25:         oklch(0.26 0.007 60);
+  --c-40:         oklch(0.38 0.008 65);
+  --c-70:         oklch(0.74 0.012 68);
+  --c-95:         oklch(0.93 0.018 68);
+  --line:         oklch(0.80 0.10 78 / 0.20);
+  --line-strong:  oklch(0.80 0.10 78 / 0.45);
+  --accent:       oklch(0.76 0.12 78);
+  --accent-soft:  oklch(0.76 0.12 78 / 0.20);
+  --accent-quiet: oklch(0.76 0.12 78 / 0.10);
+  --accent-ink:   oklch(0.14 0.04 60);
+  --pos:          oklch(0.72 0.12 145);
+  --neg:          oklch(0.64 0.16 25);
+  --info:         oklch(0.70 0.08 235);
+  --text:         oklch(0.93 0.018 68);
+  --text-2:       oklch(0.74 0.012 68);
+  --text-3:       oklch(0.54 0.010 65);
+  --font-ui:      "Inter Tight", system-ui, sans-serif;
+  --font-mono:    "JetBrains Mono", ui-monospace, monospace;
+  --font-display: "Poiret One", "Italiana", serif;
+  --r-1:          0px;
+  --r-2:          0px;
+}
+
+/* Spacing + motion — theme-independent */
 :root {
-  --bg: #1a1a1a;
-  --panel: #242424;
-  --panel-2: #2d2d2d;
-  --fg: #e8e8e8;
-  --fg-dim: #999;
-  --accent: #4a9eff;
-  --border: #3a3a3a;
-  --green: #3fa437;
-  --yellow: #e0b030;
-  --red: #c84040;
-  --blue: #3a7fd0;
-  --purple: #8844cc;
-  --danger: #c84040;
+  --sp-1:  4px;  --sp-2:  8px;  --sp-3: 12px;  --sp-4: 16px;  --sp-5: 20px;
+  --sp-6: 24px;  --sp-7: 32px;  --sp-8: 40px;  --sp-9: 56px;  --sp-10: 72px;
+  --dur-1: 80ms;
+  --dur-2: 160ms;
+  --dur-3: 240ms;
+  --ease:  cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* Bridge — legacy var names → design tokens */
+html {
+  --panel:   var(--c-10);
+  --panel-2: var(--c-15);
+  --fg:      var(--text);
+  --fg-dim:  var(--text-2);
+  --border:  var(--line-strong);
+  --danger:  var(--neg);
+  /* Lightroom label colors — intentionally hardcoded */
+  --green:   #3fa437;
+  --yellow:  #e0b030;
+  --red:     #c84040;
+  --blue:    #3a7fd0;
+  --purple:  #8844cc;
+  /* Smooth theme transitions on structural surfaces only */
+  transition:
+    background-color var(--dur-3) var(--ease),
+    border-color     var(--dur-3) var(--ease),
+    color            var(--dur-3) var(--ease);
 }
 
 * { box-sizing: border-box; }
 
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  font-family: var(--font-ui);
   background: var(--bg);
   color: var(--fg);
   font-size: 14px;
@@ -204,6 +311,18 @@ button.danger:hover { background: #a03030; }
   padding: 3px 6px;
   border-radius: 3px;
 }
+.theme-select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+  padding: 3px 6px;
+  border-radius: var(--r-1);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.theme-select:hover { color: var(--fg); }
+
 .kbd-hint { margin-left: auto; color: var(--fg-dim); font-size: 11px; }
 kbd {
   background: var(--panel-2);

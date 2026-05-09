@@ -1,0 +1,110 @@
+/* ==========================================================================
+   COVA — Design Tokens
+   --------------------------------------------------------------------------
+   Two personalities driven by the SAME structural CSS. Apply tokens by
+   setting [data-theme="modern"] or [data-theme="deco"] on a wrapping
+   element (typically <html> or the app shell root). All component CSS
+   should reference these custom properties — never hard-code colors.
+
+   Naming convention:
+     --c-NN          neutral ramp, NN ≈ oklch lightness × 100
+     --line / --line-strong   hairline borders
+     --accent*       single accent color + alpha tints
+     --pos/neg/info  semantic status (used sparingly — status only)
+     --text / --text-2 / --text-3   primary / secondary / tertiary text
+     --font-*        font stacks
+     --r-1 / --r-2   border-radius scale
+   ========================================================================== */
+
+/* ---------- MODERN · cool-neutral monochrome + amber accent --------------- */
+[data-theme="modern"] {
+  --bg:           oklch(0.14 0.005 250);
+  --c-00:         oklch(0.10 0.004 250);
+  --c-05:         oklch(0.14 0.005 250);
+  --c-10:         oklch(0.17 0.005 250);
+  --c-15:         oklch(0.20 0.005 250);
+  --c-20:         oklch(0.24 0.005 250);
+  --c-25:         oklch(0.28 0.005 250);
+  --c-40:         oklch(0.40 0.005 250);
+  --c-70:         oklch(0.70 0.005 250);
+  --c-95:         oklch(0.95 0.004 250);
+
+  --line:         oklch(1 0 0 / 0.07);
+  --line-strong:  oklch(1 0 0 / 0.12);
+
+  --accent:       oklch(0.80 0.14 75);          /* amber */
+  --accent-soft:  oklch(0.80 0.14 75 / 0.18);
+  --accent-quiet: oklch(0.80 0.14 75 / 0.08);
+  --accent-ink:   oklch(0.18 0.05 75);
+
+  --pos:          oklch(0.74 0.14 145);          /* status only */
+  --neg:          oklch(0.66 0.18 25);
+  --info:         oklch(0.72 0.10 235);
+
+  --text:         oklch(0.95 0.004 250);
+  --text-2:       oklch(0.70 0.005 250);
+  --text-3:       oklch(0.55 0.005 250);
+
+  --font-ui:      "Inter Tight", system-ui, sans-serif;
+  --font-mono:    "JetBrains Mono", ui-monospace, monospace;
+  --font-display: "Inter Tight", system-ui, sans-serif;
+
+  --r-1:          2px;
+  --r-2:          4px;
+}
+
+/* ---------- DECO · warm bone + ebony + champagne brass ------------------- */
+[data-theme="deco"] {
+  --bg:           oklch(0.12 0.005 65);
+  --c-00:         oklch(0.08 0.004 65);
+  --c-05:         oklch(0.12 0.005 65);
+  --c-10:         oklch(0.16 0.005 65);
+  --c-15:         oklch(0.19 0.006 65);
+  --c-20:         oklch(0.23 0.006 65);
+  --c-25:         oklch(0.28 0.006 65);
+  --c-40:         oklch(0.40 0.006 65);
+  --c-70:         oklch(0.72 0.008 65);
+  --c-95:         oklch(0.94 0.010 65);          /* bone */
+
+  --line:         oklch(0.78 0.06 80 / 0.14);    /* hairline brass */
+  --line-strong:  oklch(0.78 0.06 80 / 0.32);
+
+  --accent:       oklch(0.78 0.07 80);           /* champagne brass */
+  --accent-soft:  oklch(0.78 0.07 80 / 0.16);
+  --accent-quiet: oklch(0.78 0.07 80 / 0.08);
+  --accent-ink:   oklch(0.16 0.03 60);
+
+  --pos:          oklch(0.74 0.10 145);
+  --neg:          oklch(0.66 0.14 25);
+  --info:         oklch(0.72 0.07 235);
+
+  --text:         oklch(0.94 0.010 65);
+  --text-2:       oklch(0.72 0.008 65);
+  --text-3:       oklch(0.55 0.008 65);
+
+  --font-ui:      "Inter Tight", system-ui, sans-serif;
+  --font-mono:    "JetBrains Mono", ui-monospace, monospace;
+  --font-display: "Poiret One", "Italiana", serif;
+
+  --r-1:          0px;     /* sharper than modern */
+  --r-2:          0px;
+}
+
+/* ---------- Spacing scale (theme-independent) ---------------------------- */
+:root {
+  --sp-1:  4px;
+  --sp-2:  8px;
+  --sp-3:  12px;
+  --sp-4:  16px;
+  --sp-5:  20px;
+  --sp-6:  24px;
+  --sp-7:  32px;
+  --sp-8:  40px;
+  --sp-9:  56px;
+  --sp-10: 72px;
+
+  --dur-1: 80ms;     /* hover, press */
+  --dur-2: 160ms;    /* panel reveal */
+  --dur-3: 240ms;    /* heavier transitions, used sparingly */
+  --ease:  cubic-bezier(0.2, 0.7, 0.2, 1);
+}

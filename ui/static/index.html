@@ -1,15 +1,23 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="modern">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>robo-classifier</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Poiret+One&display=swap" />
 <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
 <header>
   <h1>robo-classifier</h1>
   <nav id="crumbs"></nav>
+  <select id="theme-select" class="theme-select" title="UI theme">
+    <option value="modern">Modern</option>
+    <option value="deco">Tasteful Deco</option>
+    <option value="full-deco">Full Deco</option>
+  </select>
   <button type="button" id="library-btn" class="settings-btn" title="Model library">⊞</button>
   <button type="button" id="settings-btn" class="settings-btn" title="Settings">⚙</button>
 </header>
