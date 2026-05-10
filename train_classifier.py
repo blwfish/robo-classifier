@@ -49,11 +49,13 @@ def load_dataset(dataset_dir: Path, batch_size: int = 32):
     return train_loader, test_loader, train_dataset.classes, train_dataset.class_to_idx
 
 
-def load_class_weights(dataset_dir: Path) -> torch.Tensor:
+def load_class_weights(dataset_dir: Path, class_to_idx: dict) -> torch.Tensor:
     stats = json.loads((dataset_dir / "dataset_stats.json").read_text())
     w = stats["class_weights"]
-    # Alphabetical order: reject=0, select=1
-    return torch.tensor([w["reject"], w["select"]], dtype=torch.float32)
+    weights = torch.zeros(len(class_to_idx), dtype=torch.float32)
+    for name, idx in class_to_idx.items():
+        weights[idx] = w[name]
+    return weights
 
 
 def train_epoch(model, loader, criterion, optimizer, device):
@@ -128,7 +130,7 @@ def train_classifier(
 
     # Data
     train_loader, test_loader, class_names, class_to_idx = load_dataset(dataset_dir, batch_size)
-    class_weights = load_class_weights(dataset_dir).to(device)
+    class_weights = load_class_weights(dataset_dir, class_to_idx).to(device)
     train_total = len(train_loader.dataset)
     test_total  = len(test_loader.dataset)
     print(f"Train: {train_total}  Test: {test_total}  Classes: {class_names}")

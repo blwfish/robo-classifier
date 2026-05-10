@@ -19,8 +19,7 @@ from sklearn.model_selection import train_test_split
 
 
 def _find_images(directory: Path) -> list[Path]:
-    exts = {".jpg", ".jpeg", ".JPG", ".JPEG"}
-    return [f for f in directory.iterdir() if f.is_file() and f.suffix in exts]
+    return [f for f in directory.iterdir() if f.is_file() and f.suffix.lower() in {".jpg", ".jpeg"}]
 
 
 def prepare_dataset(

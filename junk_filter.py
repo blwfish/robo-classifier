@@ -221,64 +221,62 @@ def detect_junk(
                 verbose=False,
                 imgsz=imgsz,
             )
-            # Rebind `batch` so the existing zip() below sees only the paths
-            # that had successful decodes.
             batch = valid_paths
 
-        for path, pred in zip(batch, preds):
-            img_h, img_w = pred.orig_shape
+            for path, pred in zip(batch, preds):
+                img_h, img_w = pred.orig_shape
 
-            detections: list[Detection] = []
-            usable: list[Detection] = []
+                detections: list[Detection] = []
+                usable: list[Detection] = []
 
-            for b in pred.boxes:
-                cls_idx = int(b.cls.item())
-                cls_name = pred.names[cls_idx]
-                if cls_name not in VEHICLE_CLASSES:
-                    continue
-                conf = float(b.conf.item())
-                x1, y1, x2, y2 = (float(v) for v in b.xyxy[0].tolist())
+                for b in pred.boxes:
+                    cls_idx = int(b.cls.item())
+                    cls_name = pred.names[cls_idx]
+                    if cls_name not in VEHICLE_CLASSES:
+                        continue
+                    conf = float(b.conf.item())
+                    x1, y1, x2, y2 = (float(v) for v in b.xyxy[0].tolist())
 
-                det = Detection(cls=cls_name, conf=conf, x1=x1, y1=y1, x2=x2, y2=y2)
+                    det = Detection(cls=cls_name, conf=conf, x1=x1, y1=y1, x2=x2, y2=y2)
 
-                # Filter tiny detections (background traffic, distant cars)
-                if det.area < min_area_frac * img_w * img_h:
-                    continue
+                    # Filter tiny detections (background traffic, distant cars)
+                    if det.area < min_area_frac * img_w * img_h:
+                        continue
 
-                detections.append(det)
+                    detections.append(det)
 
-                if not _is_edge_chopped(det, img_w, img_h, edge_margin_px,
-                                        min_visible_frac, edge_min_area_frac):
-                    usable.append(det)
+                    if not _is_edge_chopped(det, img_w, img_h, edge_margin_px,
+                                            min_visible_frac, edge_min_area_frac):
+                        usable.append(det)
 
-            if not detections:
-                reason = 'no_vehicle'
-                is_junk = True
-            elif not usable:
-                reason = 'all_edge_chopped'
-                is_junk = True
-            else:
-                reason = 'keep'
-                is_junk = False
+                if not detections:
+                    reason = 'no_vehicle'
+                    is_junk = True
+                elif not usable:
+                    reason = 'all_edge_chopped'
+                    is_junk = True
+                else:
+                    reason = 'keep'
+                    is_junk = False
 
-            results_out.append(JunkResult(
-                path=path,
-                is_junk=is_junk,
-                reason=reason,
-                detections=detections,
-                usable_detections=usable,
-                img_width=img_w,
-                img_height=img_h,
-            ))
+                results_out.append(JunkResult(
+                    path=path,
+                    is_junk=is_junk,
+                    reason=reason,
+                    detections=detections,
+                    usable_detections=usable,
+                    img_width=img_w,
+                    img_height=img_h,
+                ))
 
-        scanned = min(i + batch_size, len(paths))
-        print(
-            f"\r  Scanned {scanned}/{len(paths)} images...",
-            end="",
-            flush=True,
-        )
-        if progress_cb is not None:
-            progress_cb(scanned, len(paths))
+            scanned = min(i + batch_size, len(paths))
+            print(
+                f"\r  Scanned {scanned}/{len(paths)} images...",
+                end="",
+                flush=True,
+            )
+            if progress_cb is not None:
+                progress_cb(scanned, len(paths))
 
     print()
     return results_out

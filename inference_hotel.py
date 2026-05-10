@@ -6,145 +6,85 @@ Classifies images and writes XMP sidecars for Lightroom smart collections.
 
 Supports:
   - JPG, PNG input
-  - NEF input (extracts embedded JPG preview)
+  - NEF input (extracts embedded JPG preview via ImageMagick)
   - Batch processing with CSV output
   - XMP sidecar generation for Lightroom
 
 Usage:
     python inference_hotel.py --model model.pt --input_dir ./frames --output_csv results.csv
-    
+
     For NEF files, ensure you have ImageMagick installed:
         brew install imagemagick  (on macOS)
 """
 
-import torch
-import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-from torchvision import models, transforms
-import argparse
-import csv
-import json
-from pathlib import Path
-from PIL import Image
+import os
 import subprocess
 import tempfile
-import sys
 
-class InterestingClassifier:
-    def __init__(self, model_path, device=None):
-        """Load trained model."""
-        if device is None:
-            if torch.cuda.is_available():
-                self.device = torch.device("cuda")
-            elif torch.backends.mps.is_available():
-                self.device = torch.device("mps")
-            else:
-                self.device = torch.device("cpu")
-        else:
-            self.device = device
-        
-        print(f"Loading model from {model_path}")
-        checkpoint = torch.load(model_path, map_location=self.device)
-        
-        # Load model
-        model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V2)
-        num_features = model.fc.in_features
-        model.fc = torch.nn.Linear(num_features, 2)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        model = model.to(self.device)
-        model.eval()
-        
-        self.model = model
-        self.class_names = checkpoint['class_names']
-        self.class_to_idx = checkpoint['class_to_idx']
-        
-        print(f"Classes: {self.class_names}")
-        print(f"Using device: {self.device}\n")
-    
-    def get_transform(self):
-        """Return inference transform."""
-        return transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
-        ])
-    
-    def classify_image(self, image_path):
-        """
-        Classify a single image.
-        Returns: (class_name, confidence_score, predictions_dict)
-        """
-        try:
-            img = Image.open(image_path).convert('RGB')
-        except Exception as e:
-            print(f"  ERROR: Could not load {image_path}: {e}")
-            return None, None, None
-        
-        transform = self.get_transform()
-        img_tensor = transform(img).unsqueeze(0).to(self.device)
-        
-        with torch.no_grad():
-            logits = self.model(img_tensor)
-            probs = F.softmax(logits, dim=1)
-        
-        pred_idx = logits.argmax(dim=1).item()
-        pred_class = self.class_names[pred_idx]
-        confidence = probs[0, pred_idx].item()
-        
-        # Full prediction dict for potential threshold tuning later
-        predictions = {
-            self.class_names[i]: float(probs[0, i].item())
-            for i in range(len(self.class_names))
-        }
-        
-        return pred_class, confidence, predictions
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+import argparse
+import csv
+from pathlib import Path
+from PIL import Image
 
-class ImageDataset(Dataset):
-    """Dataset for batch inference."""
+from classify import ImageClassifier, ImageDataset
 
-    def __init__(self, image_paths, transform):
-        self.image_paths = image_paths
-        self.transform = transform
 
-    def __len__(self):
-        return len(self.image_paths)
+def _classify_single(classifier, image_path):
+    """Classify one image. Returns (class_name, confidence, predictions_dict)."""
+    try:
+        img = Image.open(image_path).convert('RGB')
+    except Exception as e:
+        print(f"  ERROR: Could not load {image_path}: {e}")
+        return None, None, None
 
-    def __getitem__(self, idx):
-        path = self.image_paths[idx]
-        try:
-            img = Image.open(path).convert('RGB')
-            img_tensor = self.transform(img)
-            return img_tensor, idx, True
-        except Exception as e:
-            # Return dummy tensor for failed loads
-            return torch.zeros(3, 224, 224), idx, False
+    transform = classifier.get_transform()
+    img_tensor = transform(img).unsqueeze(0).to(classifier.device)
+
+    with torch.no_grad():
+        logits = classifier.model(img_tensor)
+        probs = F.softmax(logits, dim=1)
+
+    pred_idx = logits.argmax(dim=1).item()
+    pred_class = classifier.class_names[pred_idx]
+    confidence = probs[0, pred_idx].item()
+
+    predictions = {
+        classifier.class_names[i]: float(probs[0, i].item())
+        for i in range(len(classifier.class_names))
+    }
+
+    return pred_class, confidence, predictions
 
 
 def extract_nef_preview(nef_path, temp_jpg=None):
     """
     Extract embedded JPG preview from NEF using ImageMagick.
-    Returns path to temporary JPG file.
+    Returns path to temporary JPG file, or None on failure.
+    Caller is responsible for deleting the file when done.
     """
     if temp_jpg is None:
-        temp_jpg = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False).name
-    
+        fd, temp_jpg = tempfile.mkstemp(suffix='.jpg')
+        os.close(fd)
+
     try:
-        # ImageMagick: extract first image (the preview) from NEF
         subprocess.run(
             ['convert', f"{nef_path}[0]", '-quality', '90', temp_jpg],
             check=True,
             capture_output=True
         )
         return temp_jpg
-    except subprocess.CalledProcessError as e:
+    except subprocess.CalledProcessError:
         print(f"  ERROR: Could not extract preview from {nef_path}")
+        os.unlink(temp_jpg)
         return None
     except FileNotFoundError:
         print("  ERROR: ImageMagick not found. Install with: brew install imagemagick")
+        os.unlink(temp_jpg)
         return None
+
 
 def write_xmp_sidecar(image_path, classification, confidence):
     """
@@ -152,8 +92,7 @@ def write_xmp_sidecar(image_path, classification, confidence):
     Lightroom can read these and create smart collections.
     """
     xmp_path = Path(str(image_path) + ".xmp")
-    
-    # Simple XMP format with custom namespace
+
     xmp_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:Iptc4xmpCore="http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/">
   <rdf:RDF>
@@ -179,7 +118,7 @@ def write_xmp_sidecar(image_path, classification, confidence):
   </rdf:RDF>
 </x:xmpmeta>
 """
-    
+
     try:
         with open(xmp_path, 'w') as f:
             f.write(xmp_content)
@@ -188,13 +127,14 @@ def write_xmp_sidecar(image_path, classification, confidence):
         print(f"  ERROR writing XMP sidecar: {e}")
         return False
 
+
 def process_directory(classifier, input_dir, output_csv=None, write_xmp=True,
-                     confidence_threshold=0.5, batch_size=32, num_workers=4):
+                      confidence_threshold=0.5, batch_size=32, num_workers=4):
     """
     Process all images in a directory using batched inference.
 
     Args:
-        classifier: InterestingClassifier instance
+        classifier: ImageClassifier instance
         input_dir: directory containing images
         output_csv: optional path to write CSV results
         write_xmp: if True, write XMP sidecars
@@ -205,7 +145,6 @@ def process_directory(classifier, input_dir, output_csv=None, write_xmp=True,
 
     input_dir = Path(input_dir)
 
-    # Find all image files
     image_files = []
     nef_files = []
     for ext in ['*.jpg', '*.JPG', '*.jpeg', '*.JPEG', '*.png', '*.PNG']:
@@ -220,7 +159,6 @@ def process_directory(classifier, input_dir, output_csv=None, write_xmp=True,
 
     results = []
 
-    # Process regular images with batched DataLoader
     if image_files:
         print(f"\nProcessing {len(image_files)} images in batches of {batch_size}...")
 
@@ -237,15 +175,11 @@ def process_directory(classifier, input_dir, output_csv=None, write_xmp=True,
         processed = 0
         with torch.no_grad():
             for batch_tensors, batch_indices, batch_valid in loader:
-                # Move to device
                 batch_tensors = batch_tensors.to(classifier.device)
-
-                # Forward pass
                 logits = classifier.model(batch_tensors)
                 probs = F.softmax(logits, dim=1)
                 pred_indices = logits.argmax(dim=1)
 
-                # Process each item in batch
                 for i in range(len(batch_indices)):
                     idx = batch_indices[i].item()
                     valid = batch_valid[i].item()
@@ -268,16 +202,14 @@ def process_directory(classifier, input_dir, output_csv=None, write_xmp=True,
                     }
                     results.append(result)
 
-                    # Write XMP if confidence exceeds threshold
                     if write_xmp and confidence >= confidence_threshold:
                         write_xmp_sidecar(image_path, pred_class, confidence)
 
                 processed += len(batch_indices)
                 print(f"\r  Processed {processed}/{len(image_files)} images...", end="", flush=True)
 
-        print()  # newline after progress
+        print()
 
-    # Process NEF files one at a time (need ImageMagick extraction)
     if nef_files:
         print(f"\nProcessing {len(nef_files)} NEF files...")
         for i, image_path in enumerate(nef_files, 1):
@@ -288,7 +220,10 @@ def process_directory(classifier, input_dir, output_csv=None, write_xmp=True,
                 print("SKIP (extract failed)")
                 continue
 
-            pred_class, confidence, predictions = classifier.classify_image(jpg_temp)
+            try:
+                pred_class, confidence, predictions = _classify_single(classifier, jpg_temp)
+            finally:
+                os.unlink(jpg_temp)
 
             if pred_class is None:
                 print("SKIP (load failed)")
@@ -301,25 +236,22 @@ def process_directory(classifier, input_dir, output_csv=None, write_xmp=True,
                 'path': str(image_path),
                 'classification': pred_class,
                 'confidence': confidence,
-                'confidence_reject': predictions['reject'],
-                'confidence_select': predictions['select']
+                'confidence_reject': predictions.get('reject', 0.0),
+                'confidence_select': predictions.get('select', 0.0)
             }
             results.append(result)
 
             if write_xmp and confidence >= confidence_threshold:
                 write_xmp_sidecar(image_path, pred_class, confidence)
 
-    # Write CSV
     if output_csv and results:
         output_csv = Path(output_csv)
         print(f"\nWriting results to {output_csv}")
-
         with open(output_csv, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=results[0].keys())
             writer.writeheader()
             writer.writerows(results)
 
-    # Summary
     if results:
         select_count = sum(1 for r in results if r['classification'] == 'select')
         print(f"\n=== SUMMARY ===")
@@ -330,6 +262,7 @@ def process_directory(classifier, input_dir, output_csv=None, write_xmp=True,
         print("\nNo images processed.")
 
     return results
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -375,7 +308,7 @@ def main():
 
     args = parser.parse_args()
 
-    classifier = InterestingClassifier(args.model)
+    classifier = ImageClassifier(args.model)
     process_directory(
         classifier,
         args.input_dir,
@@ -385,6 +318,7 @@ def main():
         batch_size=args.batch_size,
         num_workers=args.num_workers
     )
+
 
 if __name__ == "__main__":
     main()
