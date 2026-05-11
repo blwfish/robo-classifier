@@ -74,7 +74,7 @@ py-key-value-aio==0.4.4
 py-serializable==2.1.0
 pycparser==3.0
 pydantic==2.12.5
-pydantic-settings==2.13.1
+pydantic-settings==2.14.1
 pydantic_core==2.41.5
 pyelftools==0.32
 Pygments==2.19.2
