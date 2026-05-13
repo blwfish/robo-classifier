@@ -4,6 +4,21 @@
 
 ### ✅ Completed this phase
 
+- [x] **Silent data-loss audit** (2026-05-12): six findings from a cross-project
+      audit of batch loops with no input/output accounting:
+  - `run_inference`: corrupt files now emit a `decode_failed` row in `results.csv`
+    with the PIL exception class instead of being silently dropped.
+  - `detect_junk`: decode failures now emit a `decode_failed` JunkResult in
+    `junk_filter.csv` instead of being silently skipped (row count = input count).
+  - `run_pipeline`: `input_file_count` captured before junk filter; new summary
+    fields `decode_failures`, `input_vs_classified_delta`, `keyword_write_errors`;
+    `total_images` now means successful classifications only.
+  - `write_keywords` error count preserved (was discarded into `_errors`).
+  - `extract_raw_previews` returns `(preview_map, failed)`; missing RAW previews
+    emit `decode_failed` rows in `results.csv` closing the `input_vs_classified_delta`.
+  - `main()` prints failure count and delta **first** in the summary, in yellow,
+    so any gaps are immediately visible.
+
 - [x] **Junk filter**: YOLOv8-based pre-pass detects frames with no vehicle
       or only edge-clipped vehicles, moves them into `junk/`. Tunable edge-area
       rule (default 0.05) — user explicitly wanted aggressive filtering.
