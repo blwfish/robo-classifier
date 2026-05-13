@@ -696,6 +696,7 @@ def run_pipeline(
     # Find images up-front so we can extract previews once and share across stages.
     jpg_files, raw_files = find_images(input_dir)
     print(f"Found {len(jpg_files)} JPG/PNG and {len(raw_files)} RAW files")
+    input_file_count = len(jpg_files) + len(raw_files)
     if not jpg_files and not raw_files:
         raise RuntimeError("No images found.")
 
@@ -867,9 +868,16 @@ def run_pipeline(
             )
             select_count = select_written
 
+    junk_removed = (len(junk_summary.get("junked", [])) if junk_summary else 0)
+    input_vs_classified_delta = (
+        input_file_count - junk_removed - len(classified_results) - n_decode_failures
+    )
     summary = {
+        "input_file_count": input_file_count,
         "input_dir": str(input_dir),
-        "total_images": len(results),
+        "total_images": len(classified_results),
+        "decode_failures": n_decode_failures,
+        "input_vs_classified_delta": input_vs_classified_delta,
         "selects": sum(1 for r in results if r['classification'] == 'select'),
         "winners": len(winners),
         "tier_counts": tier_counts,
@@ -1078,6 +1086,18 @@ def main():
     total = summary['total_images']
     selects = summary['selects']
     print(f"\n{'=' * 50}\nSUMMARY\n{'=' * 50}")
+    n_failures = summary.get('decode_failures', 0)
+    delta = summary.get('input_vs_classified_delta', 0)
+    if n_failures > 0 or delta != 0:
+        warn = "\033[33mWARN\033[0m"
+        if n_failures > 0:
+            print(f"[{warn}] {n_failures} file(s) failed to decode — see decode_failed rows in results.csv")
+        if delta != 0:
+            junk_n = (summary.get('junk') or {}).get('n_junk', 0)
+            print(f"[{warn}] {delta} file(s) unaccounted: "
+                  f"{summary.get('input_file_count', '?')} in, "
+                  f"{summary.get('input_file_count', 0) - junk_n} after junk filter, "
+                  f"{total + n_failures} classified")
     print(f"Total images:      {total}")
     if total:
         print(f"Classified select: {selects} ({100*selects/total:.1f}%)")
