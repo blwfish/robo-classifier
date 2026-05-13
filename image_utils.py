@@ -280,9 +280,9 @@ def extract_raw_previews(raw_files, temp_dir, progress_label="Extracting preview
 
     print()
     if failed:
-        print(f"  WARNING: Failed to extract {len(failed)} previews")
+        print(f"  WARNING: Failed to extract previews for {len(failed)} RAW file(s)")
 
-    return preview_map
+    return preview_map, failed
 
 
 def check_exiftool():

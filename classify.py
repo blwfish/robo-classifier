@@ -704,10 +704,11 @@ def run_pipeline(
     # extract RAW previews twice.
     with tempfile.TemporaryDirectory() as preview_dir:
         preview_map: dict = {}
+        preview_extract_failures: list = []
         if raw_files:
             progress_cb({"type": "stage", "stage": "previews",
                          "message": f"Extracting RAW previews ({pw} workers)"})
-            preview_map = extract_raw_previews(
+            preview_map, preview_extract_failures = extract_raw_previews(
                 raw_files, preview_dir, workers=pw,
                 max_preview_edge=max_preview_edge,
                 progress_cb=lambda c, t: progress_cb(
@@ -800,6 +801,19 @@ def run_pipeline(
                     {"type": "progress", "stage": "thumbs", "current": c, "total": t}
                 ),
             )
+
+    # RAW files whose preview extraction failed never entered inference; emit
+    # decode_failed rows here so results.csv has full input coverage.
+    for raw_path in preview_extract_failures:
+        results.append({
+            'filename': raw_path.name,
+            'path': str(raw_path),
+            'classification': 'decode_failed',
+            'confidence': 0.0,
+            'confidence_reject': 0.0,
+            'confidence_select': 0.0,
+            'error_class': 'PreviewExtractionFailed',
+        })
 
     n_decode_failures = sum(1 for r in results if r.get('classification') == 'decode_failed')
     classified_results = [r for r in results if r['classification'] != 'decode_failed']
