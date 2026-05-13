@@ -842,6 +842,7 @@ def run_pipeline(
     tier_counts = {f"robo_{i}": 0 for i in range(90, 100)}
     tier_counts["below_threshold"] = 0
     select_count = 0
+    keyword_write_errors = 0
     if not no_keywords and winners:
         print(f"\n=== Step 4: Writing tiered keywords ===")
         progress_cb({"type": "stage", "stage": "keywords", "message": "Writing keywords"})
@@ -863,7 +864,7 @@ def run_pipeline(
                     tier_counts["below_threshold"] += 1
             select_count = sum(len(bursts[b]) for b in qualifying_bursts)
         else:
-            tier_counts, _winner_written, select_written, _errors = write_keywords(
+            tier_counts, _winner_written, select_written, keyword_write_errors = write_keywords(
                 winners, bursts, nef_dir
             )
             select_count = select_written
@@ -882,6 +883,7 @@ def run_pipeline(
         "winners": len(winners),
         "tier_counts": tier_counts,
         "select_siblings": select_count,
+        "keyword_write_errors": keyword_write_errors,
         # Keep only the JSON-safe scalar counts — the full junk_summary contains
         # Path/JunkResult objects that can't be serialized onto the SSE stream.
         "junk": (
