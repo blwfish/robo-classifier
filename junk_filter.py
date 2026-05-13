@@ -70,11 +70,12 @@ class Detection:
 class JunkResult:
     path: Path
     is_junk: bool
-    reason: str  # 'no_vehicle' | 'all_edge_chopped' | 'keep'
+    reason: str  # 'no_vehicle' | 'all_edge_chopped' | 'keep' | 'decode_failed'
     detections: list = field(default_factory=list)
     usable_detections: list = field(default_factory=list)
     img_width: int = 0
     img_height: int = 0
+    error_class: str = ''
 
 
 def _touches_edge(det: Detection, img_w: int, img_h: int, margin: float) -> bool:
@@ -187,9 +188,9 @@ def detect_junk(
     # utilization went from ~16% to much higher as a result.
     def _decode(path):
         try:
-            return np.asarray(Image.open(path).convert('RGB'))
-        except Exception:
-            return None
+            return np.asarray(Image.open(path).convert('RGB')), None
+        except Exception as e:
+            return None, type(e).__name__
 
     decode_workers = max(2, min(8, (os.cpu_count() or 4) // 2))
 
@@ -207,11 +208,18 @@ def detect_junk(
             valid_paths = []
             valid_indices = []
             for j, p in enumerate(batch_paths):
-                arr = futures[i + j].result()
+                arr, err = futures[i + j].result()
                 if arr is not None:
                     batch_arrays.append(arr)
                     valid_paths.append(p)
                     valid_indices.append(j)
+                else:
+                    results_out.append(JunkResult(
+                        path=p,
+                        is_junk=False,
+                        reason='decode_failed',
+                        error_class=err or 'UnknownError',
+                    ))
             if not batch_arrays:
                 continue
             preds = model.predict(
@@ -416,7 +424,7 @@ def filter_directory(
                 writer = csv.writer(f)
                 writer.writerow([
                     'filename', 'path', 'is_junk', 'reason',
-                    'n_detections', 'n_usable', 'img_w', 'img_h',
+                    'n_detections', 'n_usable', 'img_w', 'img_h', 'error_class',
                 ])
                 for r in results:
                     writer.writerow([
@@ -428,6 +436,7 @@ def filter_directory(
                         len(r.usable_detections),
                         r.img_width,
                         r.img_height,
+                        r.error_class,
                     ])
             print(f"Wrote {csv_path}")
 
