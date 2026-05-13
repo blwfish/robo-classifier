@@ -125,9 +125,10 @@ def run_inference(classifier, image_files, batch_size=32, num_workers=4, origina
         list of result dicts with original paths
     """
     results = []
+    decode_failures = []
 
     if not image_files:
-        return results
+        return results, decode_failures
 
     print(f"\nRunning inference on {len(image_files)} images (batch_size={batch_size})...")
 
@@ -154,14 +155,28 @@ def run_inference(classifier, image_files, batch_size=32, num_workers=4, origina
                 valid = batch_valid[i].item()
                 image_path = image_files[idx]
 
-                if not valid:
-                    continue
-
                 # Use original path if provided (for RAW files)
                 if original_paths and image_path in original_paths:
                     actual_path = original_paths[image_path]
                 else:
                     actual_path = image_path
+
+                if not valid:
+                    error_class = 'UnknownError'
+                    try:
+                        Image.open(image_path).convert('RGB')
+                    except Exception as e:
+                        error_class = type(e).__name__
+                    decode_failures.append({
+                        'filename': actual_path.name,
+                        'path': str(actual_path),
+                        'classification': 'decode_failed',
+                        'confidence': 0.0,
+                        'confidence_reject': 0.0,
+                        'confidence_select': 0.0,
+                        'error_class': error_class,
+                    })
+                    continue
 
                 pred_idx = pred_indices[i].item()
                 pred_class = classifier.class_names[pred_idx]
@@ -173,7 +188,8 @@ def run_inference(classifier, image_files, batch_size=32, num_workers=4, origina
                     'classification': pred_class,
                     'confidence': confidence,
                     'confidence_reject': probs[i, classifier.class_to_idx['reject']].item(),
-                    'confidence_select': probs[i, classifier.class_to_idx['select']].item()
+                    'confidence_select': probs[i, classifier.class_to_idx['select']].item(),
+                    'error_class': '',
                 }
                 results.append(result)
 
@@ -183,7 +199,7 @@ def run_inference(classifier, image_files, batch_size=32, num_workers=4, origina
                 progress_cb(processed, len(image_files))
 
     print()
-    return results
+    return results, decode_failures
 
 
 # =============================================================================
@@ -748,22 +764,24 @@ def run_pipeline(
             })
 
         if jpg_files:
-            jpg_results = run_inference(
+            jpg_results, jpg_failures = run_inference(
                 classifier, jpg_files, batch_size, num_workers,
                 progress_cb=_inference_progress_adapter,
             )
             results.extend(jpg_results)
+            results.extend(jpg_failures)
             n_done += len(jpg_files)
 
         if raw_files and preview_map:
             preview_to_original = {v: k for k, v in preview_map.items()}
             preview_files = list(preview_map.values())
-            raw_results = run_inference(
+            raw_results, raw_failures = run_inference(
                 classifier, preview_files, batch_size, num_workers,
                 original_paths=preview_to_original,
                 progress_cb=_inference_progress_adapter,
             )
             results.extend(raw_results)
+            results.extend(raw_failures)
 
         # Step 2b: Pregenerate UI thumbnails while previews are still on disk.
         # (Runs inside the preview_dir context so preview files are still available.)
@@ -782,29 +800,35 @@ def run_pipeline(
                 ),
             )
 
-    if not results:
-        raise RuntimeError("No images could be processed.")
+    n_decode_failures = sum(1 for r in results if r.get('classification') == 'decode_failed')
+    classified_results = [r for r in results if r['classification'] != 'decode_failed']
 
-    # Write results CSV
+    # Write results CSV first (includes decode_failed rows) so failures are visible
+    # even if we subsequently raise.
     results_csv = output_dir / "results.csv"
-    if not dry_run:
+    if not dry_run and results:
         print(f"\nWriting full results to {results_csv}")
         with open(results_csv, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=results[0].keys())
             writer.writeheader()
             writer.writerows(results)
 
-    # Step 3: Burst dedup
+    if not results:
+        raise RuntimeError("No images could be processed.")
+    if not classified_results:
+        raise RuntimeError("All images failed to decode. Check results.csv for error details.")
+
+    # Step 3: Burst dedup (decode_failed rows excluded)
     print(f"\n=== Step 3: Burst deduplication ===")
     progress_cb({"type": "stage", "stage": "dedup", "message": "Deduping bursts"})
 
     capture_times = {}
     if burst_threshold is not None and burst_threshold > 0:
-        all_paths = [Path(r['path']) for r in results]
+        all_paths = [Path(r['path']) for r in classified_results]
         capture_times = get_capture_times(all_paths)
 
-    winners, bursts = burst_dedup(results, capture_times, burst_threshold)
-    print(f"Reduced {len(results)} images to {len(winners)} burst winners")
+    winners, bursts = burst_dedup(classified_results, capture_times, burst_threshold)
+    print(f"Reduced {len(classified_results)} images to {len(winners)} burst winners")
 
     winners_csv = output_dir / "winners.csv"
     if not dry_run and winners:
