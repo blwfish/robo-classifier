@@ -192,15 +192,28 @@ class TestBurstDedupByTime:
         assert len(bursts) == 2
 
     def test_adaptive_threshold_for_slow_shutter(self):
-        """A 1s exposure followed by another 0.8s later should NOT split,
-        because the adaptive threshold becomes max(0.5, 1.0+0.1) = 1.1s."""
+        """A 1s exposure followed by another 1.15s later should NOT split.
+        Empirically measured Z9/Z6III overhead at 1s shutter: 0.13-0.15s.
+        Buffer is +0.20s → adaptive_threshold = max(0.5, 1.0+0.20) = 1.20s.
+        Gap of 1.15s < 1.20s → stays in same burst."""
         results, ct = self._make(
             ["a.jpg", "b.jpg"],
-            times=[0.0, 0.8],
+            times=[0.0, 1.15],
             shutters=[1.0, 1.0],
         )
         winners, bursts = classify.burst_dedup_by_time(results, ct, threshold=0.5)
         assert len(bursts) == 1
+
+    def test_adaptive_threshold_splits_intentional_pause(self):
+        """A 1s exposure with a >1.20s pause should split into a new burst.
+        Gap of 2.0s > max(0.5, 1.0+0.20)=1.20s → new burst."""
+        results, ct = self._make(
+            ["a.jpg", "b.jpg"],
+            times=[0.0, 2.0],
+            shutters=[1.0, 1.0],
+        )
+        winners, bursts = classify.burst_dedup_by_time(results, ct, threshold=0.5)
+        assert len(bursts) == 2
 
     def test_sorted_by_timestamp_not_input_order(self):
         # Input order shouldn't affect grouping — timestamps do
@@ -249,7 +262,7 @@ class TestBurstDedupByTime:
 
     def test_gap_exactly_at_threshold_not_split(self):
         # Condition is strict `>`, so gap == adaptive_threshold stays in one burst.
-        # adaptive_threshold = max(0.5, 0+0.1) = 0.5 (shutter=0, no adaption)
+        # shutter=0 → adaptive_threshold = max(0.5, 0+0.20) = 0.5
         results, ct = self._make(["a.jpg", "b.jpg"], times=[0.0, 0.5])
         winners, bursts = classify.burst_dedup_by_time(results, ct, threshold=0.5)
         assert len(bursts) == 1

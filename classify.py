@@ -290,7 +290,7 @@ def burst_dedup_by_time(results, capture_times, threshold=0.5):
     """
     Group results into bursts based on capture time proximity.
     Two frames are in the same burst if the gap between them is less than
-    max(threshold, shutter_speed + 0.05).
+    max(threshold, shutter_speed + 0.20).
 
     Args:
         results: list of result dicts with 'path' keys
@@ -332,8 +332,10 @@ def burst_dedup_by_time(results, capture_times, threshold=0.5):
 
         gap = timestamp - prev_timestamp
 
-        # Adaptive threshold: max of base threshold or shutter + buffer
-        adaptive_threshold = max(threshold, max(shutter, prev_shutter) + 0.1)
+        # Adaptive threshold: max of base threshold or shutter + buffer.
+        # Buffer of 0.20s covers measured Z9/Z6III blackout overhead (~0.13-0.15s)
+        # with 50ms margin. Both 0.05 and 0.10 were empirically too small.
+        adaptive_threshold = max(threshold, max(shutter, prev_shutter) + 0.20)
 
         if gap > adaptive_threshold:
             # New burst
