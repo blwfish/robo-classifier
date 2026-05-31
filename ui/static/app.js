@@ -264,7 +264,7 @@ async function init() {
     trainRejectBrowser.open(hint);
   });
   document.getElementById("train-model-name").addEventListener("input", updateTrainGoBtn);
-  ["train-epochs", "train-lr", "train-batch", "train-test-split"].forEach(id => {
+  ["train-epochs", "train-lr", "train-batch", "train-test-size"].forEach(id => {
     document.getElementById(id).addEventListener("change", saveTrainHyperparams);
   });
   document.getElementById("train-use-model-btn").addEventListener("click", () => {
@@ -1400,7 +1400,7 @@ function saveTrainHyperparams() {
     epochs:    document.getElementById("train-epochs").value,
     lr:        document.getElementById("train-lr").value,
     batch:     document.getElementById("train-batch").value,
-    testSplit: document.getElementById("train-test-split").value,
+    testSplit: document.getElementById("train-test-size").value,
   }));
 }
 
@@ -1442,7 +1442,7 @@ async function openTrainScreen() {
   if (hp.epochs    != null) document.getElementById("train-epochs").value    = hp.epochs;
   if (hp.lr        != null) document.getElementById("train-lr").value        = hp.lr;
   if (hp.batch     != null) document.getElementById("train-batch").value     = hp.batch;
-  if (hp.testSplit != null) document.getElementById("train-test-split").value = hp.testSplit;
+  if (hp.testSplit != null) document.getElementById("train-test-size").value = hp.testSplit;
 
   resetTrainScreen(/*keepDirs=*/true);
   showScreen("train");

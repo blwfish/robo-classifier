@@ -232,8 +232,9 @@ def _parse_dt(dt_str: str) -> Optional[str]:
     """
     if not dt_str:
         return None
-    # Strip timezone suffix if present (e.g. "+00:00")
-    dt_str = dt_str.split("+")[0].split("-")[0] if len(dt_str) > 19 else dt_str
+    # Both EXIF ("2026:02:28 10:37:58") and ISO ("2026-02-28T10:37:58") formats
+    # have their datetime in the first 19 characters; anything beyond is timezone.
+    dt_str = dt_str[:19] if len(dt_str) > 19 else dt_str
     cleaned = dt_str.replace(":", "").replace(" ", "").replace("T", "")
     digits = "".join(c for c in cleaned if c.isdigit())
     if len(digits) >= 14:

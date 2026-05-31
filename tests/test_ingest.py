@@ -79,9 +79,24 @@ class TestParseDt:
         # exiftool returns "YYYY:MM:DD HH:MM:SS" — must become 14-digit string.
         assert _parse_dt("2026:02:28 10:37:58") == "20260228103758"
 
-    def test_strips_timezone_suffix(self):
-        # DJI and some mirrorless bodies append "+00:00" — must be ignored.
+    def test_strips_positive_timezone_exif_format(self):
+        # DJI and some mirrorless bodies append "+00:00" to EXIF-format strings.
         assert _parse_dt("2026:02:28 10:37:58+00:00") == "20260228103758"
+
+    def test_strips_negative_timezone_exif_format(self):
+        # Negative UTC offset on an EXIF-format string.
+        assert _parse_dt("2026:02:28 10:37:58-05:00") == "20260228103758"
+
+    def test_iso_format_with_positive_timezone(self):
+        # DJI Air 3 uses ISO 8601 with dashes + "T" separator and a "+" offset.
+        # The old split("+")[0].split("-")[0] logic ate the date dashes, returning None.
+        assert _parse_dt("2026-02-28T10:37:58+05:30") == "20260228103758"
+
+    def test_iso_format_with_negative_timezone(self):
+        assert _parse_dt("2026-02-28T10:37:58-05:00") == "20260228103758"
+
+    def test_iso_format_no_timezone(self):
+        assert _parse_dt("2026-02-28T10:37:58") == "20260228103758"
 
     def test_empty_string_returns_none(self):
         # exiftool returns "" when no DateTimeOriginal tag exists.

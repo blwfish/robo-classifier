@@ -261,3 +261,83 @@ class TestWriteKeywordRouting:
         empty_dir.mkdir()
         assert classify.write_keyword_to_file("/preview/ghost.jpg", "select",
                                               nef_dir=str(empty_dir)) is False
+
+
+# =============================================================================
+# clear_robo_keywords — stale tag removal before re-tuning
+# =============================================================================
+
+class TestClearRoboKeywords:
+    def test_jpeg_calls_exiftool_with_removal_tags(self, tmp_path, monkeypatch):
+        jpg = tmp_path / "a.jpg"
+        jpg.write_bytes(b"")
+        captured = []
+        monkeypatch.setattr(classify.subprocess, "run",
+                            lambda args, **kw: captured.append(args) or
+                            MagicMock(returncode=0))
+        result = classify.clear_robo_keywords(str(jpg))
+        assert result is True
+        args = captured[0]
+        assert "-overwrite_original" in args
+        assert str(jpg) in args
+        # All robo tier tags must be removed
+        for i in range(90, 100):
+            assert f"-Keywords-=robo_{i}" in args
+        assert "-Keywords-=select" in args
+
+    def test_jpeg_removes_hierarchical_ai_keywords(self, tmp_path, monkeypatch):
+        jpg = tmp_path / "a.jpg"
+        jpg.write_bytes(b"")
+        captured = []
+        monkeypatch.setattr(classify.subprocess, "run",
+                            lambda args, **kw: captured.append(args) or
+                            MagicMock(returncode=0))
+        classify.clear_robo_keywords(str(jpg))
+        args = captured[0]
+        assert "-HierarchicalSubject-=AI keywords|select" in args
+        assert "-HierarchicalSubject-=AI keywords|robo|robo_95" in args
+
+    def test_raw_no_sidecar_returns_true_without_calling_exiftool(self, tmp_path, monkeypatch):
+        # No XMP exists — nothing to clear, should return True immediately.
+        nef = tmp_path / "a.NEF"
+        nef.write_bytes(b"")
+        called = []
+        monkeypatch.setattr(classify.subprocess, "run",
+                            lambda args, **kw: called.append(args))
+        result = classify.clear_robo_keywords(str(nef))
+        assert result is True
+        assert called == []
+
+    def test_raw_with_sidecar_calls_exiftool_on_xmp(self, tmp_path, monkeypatch):
+        nef = tmp_path / "a.NEF"
+        nef.write_bytes(b"")
+        xmp = tmp_path / "a.xmp"
+        xmp.write_text("<xmp/>")
+        captured = []
+        monkeypatch.setattr(classify.subprocess, "run",
+                            lambda args, **kw: captured.append(args) or
+                            MagicMock(returncode=0))
+        result = classify.clear_robo_keywords(str(nef))
+        assert result is True
+        args = captured[0]
+        assert str(xmp) in args
+        assert "-Keywords-=select" in args
+
+    def test_nef_dir_missing_nef_returns_false(self, tmp_path, monkeypatch):
+        # nef_dir given but the NEF file doesn't exist — should return False.
+        nef_dir = tmp_path / "raws"
+        nef_dir.mkdir()
+        jpg = tmp_path / "preview" / "a.jpg"
+        called = []
+        monkeypatch.setattr(classify.subprocess, "run",
+                            lambda args, **kw: called.append(args))
+        result = classify.clear_robo_keywords(str(jpg), nef_dir=str(nef_dir))
+        assert result is False
+        assert called == []
+
+    def test_exiftool_missing_returns_false(self, tmp_path, monkeypatch):
+        jpg = tmp_path / "a.jpg"
+        jpg.write_bytes(b"")
+        def raise_nf(*a, **kw): raise FileNotFoundError("exiftool")
+        monkeypatch.setattr(classify.subprocess, "run", raise_nf)
+        assert classify.clear_robo_keywords(str(jpg)) is False

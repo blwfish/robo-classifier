@@ -38,7 +38,12 @@
   - 512px preview downsample at extraction (cuts YOLO decode ~13×)
   - Parallel YOLO image decode (ThreadPoolExecutor feeds predict with ndarrays)
   - Thumb pregeneration during pipeline so grid opens instantly
-- [x] Regression tests kept passing throughout (62 pytest cases)
+- [x] **Train screen** (UI wrapper around `prepare_training_data.py` +
+      `train_classifier.py`): already fully implemented. Fixed one bug where
+      the test-fraction input ID was mistyped in `saveTrainHyperparams` /
+      `restoreTrainHyperparams` (`train-test-split` → `train-test-size`),
+      causing a silent TypeError on every hyperparam save/restore.
+- [x] Regression tests kept passing throughout (183 pytest cases)
 
 ### Benchmarks (Road Atlanta Turn 3, 17k NEFs, M1 Max via USB 3.2)
 
@@ -86,5 +91,5 @@ won't move that bar. Internal NVMe or Thunderbolt external would give ~3×.
    exactly where time goes at that scale.
 2. Vic (Windows + nVidia, 2-3 robo cams) pulls latest + runs with the
    `nvidia-desktop` preset, then tunes his own `vic-rig.toml`.
-3. Deferred UI work (see `UI_PLAN.md`): training a new model from the UI
-   (wrap `prepare_training_data.py` + `train_classifier.py`).
+3. ~~Deferred UI work: training a new model from the UI~~ — done (was already
+   implemented; fixed localStorage bug).

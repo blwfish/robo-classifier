@@ -88,43 +88,42 @@ def extract_nef_preview(nef_path, temp_jpg=None):
 
 def write_xmp_sidecar(image_path, classification, confidence):
     """
-    Write XMP sidecar with classification results.
-    Lightroom can read these and create smart collections.
-    """
-    xmp_path = Path(str(image_path) + ".xmp")
+    Write classification keyword to XMP sidecar via exiftool.
 
-    xmp_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<x:xmpmeta xmlns:x="adobe:ns:meta/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:Iptc4xmpCore="http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/">
-  <rdf:RDF>
-    <rdf:Description rdf:about="uuid:faf5bdd5-ba3d-11da-ad31-d33d75182f1b" xmlns:Iptc4xmpCore="http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/">
-      <Iptc4xmpCore:CreatorContactInfo>
-        <rdf:Seq>
-          <rdf:li>
-            <rdf:Description>
-              <Iptc4xmpCore:CiKeywords>
-                <rdf:Bag>
-                  <rdf:li>{classification}</rdf:li>
-                </rdf:Bag>
-              </Iptc4xmpCore:CiKeywords>
-            </rdf:Description>
-          </rdf:li>
-        </rdf:Seq>
-      </Iptc4xmpCore:CreatorContactInfo>
-    </rdf:Description>
-    <rdf:Description rdf:about="uuid:faf5bdd5-ba3d-11da-ad31-d33d75182f1b" xmlns:robo="http://example.com/robo-classifier/1.0/">
-      <robo:classification>{classification}</robo:classification>
-      <robo:confidence>{confidence:.4f}</robo:confidence>
-    </rdf:Description>
-  </rdf:RDF>
-</x:xmpmeta>
-"""
+    Uses dc:subject / lr:hierarchicalSubject so Lightroom keyword smart
+    collections work. Previously wrote to Iptc4xmpCore:CiKeywords (creator
+    contact field), which Lightroom ignores for keyword indexing.
+
+    The sidecar is placed at <stem>.xmp alongside the image file, not at
+    <filename>.xmp (which was the previous broken behaviour for RAW files).
+    """
+    import subprocess
+    image_path = Path(image_path)
+    xmp_path = image_path.with_suffix('.xmp')
+
+    if xmp_path.exists():
+        cmd = [
+            'exiftool', '-overwrite_original',
+            f'-Keywords+={classification}',
+            f'-Subject+={classification}',
+            f'-HierarchicalSubject+=robo|{classification}',
+            str(xmp_path),
+        ]
+    else:
+        cmd = [
+            'exiftool',
+            '-tagsfromfile', str(image_path),
+            f'-Keywords+={classification}',
+            f'-Subject+={classification}',
+            f'-HierarchicalSubject+=robo|{classification}',
+            '-o', str(xmp_path),
+        ]
 
     try:
-        with open(xmp_path, 'w') as f:
-            f.write(xmp_content)
-        return True
-    except Exception as e:
-        print(f"  ERROR writing XMP sidecar: {e}")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        return result.returncode == 0
+    except FileNotFoundError:
+        print("  ERROR: exiftool not found. Install with: brew install exiftool")
         return False
 
 
