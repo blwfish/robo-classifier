@@ -281,6 +281,48 @@ class TestUnknownKeyPreservation:
 # Missing file — graceful load
 # =============================================================================
 
+# =============================================================================
+# AppConfig.default_profile — optional, not in missing_required
+# =============================================================================
+
+class TestDefaultProfile:
+    def test_default_profile_none_when_unset(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(app_config, "CONFIG_PATH", tmp_path / "config.toml")
+        cfg = AppConfig()
+        assert cfg.default_profile is None
+
+    def test_default_profile_returns_value_when_set(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(app_config, "CONFIG_PATH", tmp_path / "config.toml")
+        cfg = AppConfig()
+        cfg.set("default_profile", "pca")
+        assert cfg.default_profile == "pca"
+
+    def test_default_profile_whitespace_only_returns_none(self, tmp_path, monkeypatch):
+        # "   " is meaningless as a profile name — treat as unset.
+        monkeypatch.setattr(app_config, "CONFIG_PATH", tmp_path / "config.toml")
+        cfg = AppConfig()
+        cfg._data["default_profile"] = "   "
+        assert cfg.default_profile is None
+
+    def test_default_profile_not_in_missing_required(self, tmp_path, monkeypatch):
+        # default_profile is optional; leaving it unset must not block the UI.
+        monkeypatch.setattr(app_config, "CONFIG_PATH", tmp_path / "config.toml")
+        cfg = AppConfig()
+        cfg.set_many({"model_library": "/m", "dataset_scratch": "/d"})
+        assert "default_profile" not in cfg.missing_required()
+        assert cfg.missing_required() == []
+
+    def test_default_profile_survives_roundtrip(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "config.toml"
+        monkeypatch.setattr(app_config, "CONFIG_PATH", config_path)
+        cfg = AppConfig()
+        cfg.set("default_profile", "imsa")
+        cfg2 = AppConfig()
+        assert cfg2.default_profile == "imsa"
+
+
+# =============================================================================
+
 class TestMissingFile:
     def test_load_missing_file_does_not_raise(self, tmp_path, monkeypatch):
         # A user who has never run the app has no config file — must start clean.

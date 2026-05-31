@@ -289,3 +289,52 @@ class TestRecordSaved:
             rec.cb({"type": "__end__", "summary": {}})
         records = _read_records(tmp_path)
         assert len(records) == 3
+
+
+# =============================================================================
+# Progress-event implicit stage switch
+# =============================================================================
+
+class TestProgressImplicitStageSwitch:
+    def test_progress_with_new_stage_closes_previous(self, tmp_path):
+        # A progress event whose stage field differs from the current stage
+        # must close the current stage and open a new one — without an explicit
+        # stage event. This is the implicit-switch path in _handle().
+        rec = _make_recorder(tmp_path)
+        rec.cb({"type": "stage", "stage": "extract", "total": 10})
+        rec.cb({"type": "progress", "stage": "extract", "done": 5, "total": 10})
+        # Now send a progress event with a DIFFERENT stage name
+        rec.cb({"type": "progress", "stage": "classify", "done": 1, "total": 8})
+        rec.cb({"type": "__end__", "summary": {}})
+
+        record = _read_records(tmp_path)[0]
+        stage_names = [s["name"] for s in record["stages"]]
+        # Both stages must appear in the record
+        assert "extract" in stage_names
+        assert "classify" in stage_names
+
+    def test_progress_same_stage_does_not_close(self, tmp_path):
+        # A progress event whose stage matches the current stage must NOT close it.
+        rec = _make_recorder(tmp_path)
+        rec.cb({"type": "stage", "stage": "extract", "total": 10})
+        rec.cb({"type": "progress", "stage": "extract", "done": 3, "total": 10})
+        rec.cb({"type": "progress", "stage": "extract", "done": 7, "total": 10})
+        rec.cb({"type": "__end__", "summary": {}})
+
+        record = _read_records(tmp_path)[0]
+        # Only one stage should appear — the two progress events didn't split it
+        assert len(record["stages"]) == 1
+        assert record["stages"][0]["name"] == "extract"
+        assert record["stages"][0]["files"] == 7  # last progress value
+
+    def test_progress_without_stage_field_keeps_current(self, tmp_path):
+        # A progress event with no stage field must update the current stage,
+        # not accidentally open a new one.
+        rec = _make_recorder(tmp_path)
+        rec.cb({"type": "stage", "stage": "junk_filter", "total": 100})
+        rec.cb({"type": "progress", "done": 50, "total": 100})  # no stage key
+        rec.cb({"type": "__end__", "summary": {}})
+
+        record = _read_records(tmp_path)[0]
+        assert len(record["stages"]) == 1
+        assert record["stages"][0]["files"] == 50

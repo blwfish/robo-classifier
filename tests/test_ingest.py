@@ -24,6 +24,7 @@ from ingest import (
     _open_manifest,
     _record,
     _known_hash,
+    ingest,
 )
 
 
@@ -339,3 +340,63 @@ class TestManifest:
         conn = _open_manifest(nested)
         conn.close()
         assert nested.exists()
+
+
+# =============================================================================
+# ingest() orchestration — pure-path tests (no exiftool required)
+# =============================================================================
+
+class TestIngestOrchestration:
+    def test_empty_sources_returns_zero_summary(self, tmp_path):
+        dest = tmp_path / "dest"
+        manifest = tmp_path / "ingest.db"
+        summary = ingest(sources=[], dest_dir=dest, manifest_path=manifest)
+        assert summary["copied"]  == 0
+        assert summary["skipped"] == 0
+        assert summary["errors"]  == 0
+        assert summary["total"]   == 0
+        assert str(dest) in summary["dest"]
+
+    def test_empty_sources_emits_end_event(self, tmp_path):
+        events = []
+        ingest(sources=[], dest_dir=tmp_path / "dest",
+               manifest_path=tmp_path / "ingest.db",
+               progress_cb=events.append)
+        end_events = [e for e in events if e["type"] == "__end__"]
+        assert len(end_events) == 1
+        assert end_events[0]["summary"]["total"] == 0
+
+    def test_source_dir_with_no_images_returns_zero_summary(self, tmp_path):
+        # A directory that exists but contains only .txt files → all_files empty.
+        src = tmp_path / "card"
+        src.mkdir()
+        (src / "readme.txt").write_text("not an image")
+        (src / "notes.md").write_text("also not an image")
+        dest = tmp_path / "dest"
+        manifest = tmp_path / "ingest.db"
+        summary = ingest(
+            sources=[{"path": str(src), "label": "CardA"}],
+            dest_dir=dest,
+            manifest_path=manifest,
+        )
+        assert summary["total"] == 0
+        assert summary["copied"] == 0
+
+    def test_empty_sources_creates_dest_dir(self, tmp_path):
+        dest = tmp_path / "archive" / "nested"
+        ingest(sources=[], dest_dir=dest, manifest_path=tmp_path / "ingest.db")
+        assert dest.exists()
+
+    @pytest.mark.skip(reason=(
+        "hash-dedup skip path requires _read_exif_batch (exiftool). "
+        "Integration test needed with real image files."
+    ))
+    def test_already_ingested_file_is_skipped(self, tmp_path):
+        pass
+
+    @pytest.mark.skip(reason=(
+        "name-collision resolution (_c1, _c2 suffix loop) requires "
+        "_read_exif_batch (exiftool). Integration test needed with real files."
+    ))
+    def test_collision_appends_c1_suffix(self, tmp_path):
+        pass
