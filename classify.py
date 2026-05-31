@@ -567,6 +567,14 @@ def write_keywords(winners, bursts, nef_dir=None):
     select_written = 0
     errors = 0
 
+    # Clear any stale robo_9x / select keywords from a previous run so that
+    # tier changes after threshold tuning don't accumulate. Auto-clearing is
+    # the right default today, but may need to become opt-in once the upper
+    # layers support multi-model merging or incremental keyword workflows.
+    all_frames = {frame['path'] for frames in bursts.values() for frame in frames}
+    for path in all_frames:
+        clear_robo_keywords(path, nef_dir)
+
     # Build reverse lookup: path -> burst_key
     path_to_burst = {}
     for burst_key, frames in bursts.items():

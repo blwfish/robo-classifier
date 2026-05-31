@@ -311,10 +311,13 @@ def _move_with_sidecar(src: Path, dst_dir: Path, dry_run: bool = False):
 
     dst = dst_dir / src.name
     moves.append((src, dst))
+
+    # Check for sidecar BEFORE moving src — _companion_xmp uses src.exists()
+    xmp = _companion_xmp(src)
+
     if not dry_run:
         shutil.move(str(src), str(dst))
 
-    xmp = _companion_xmp(src)
     if xmp is not None:
         dst_xmp = dst_dir / xmp.name
         moves.append((xmp, dst_xmp))
