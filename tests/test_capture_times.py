@@ -158,6 +158,35 @@ class TestFindImages:
         jpgs, raws = classify.find_images(tmp_path)
         assert jpgs == [] and raws == []
 
+    def test_recursive_includes_subdirectories(self, tmp_path):
+        (tmp_path / "root.jpg").write_bytes(b"")
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (sub / "nested.jpg").write_bytes(b"")
+        jpgs, _ = classify.find_images(tmp_path, recursive=True)
+        names = {p.name for p in jpgs}
+        assert names == {"root.jpg", "nested.jpg"}
+
+    def test_recursive_skips_dot_directories(self, tmp_path):
+        (tmp_path / "visible.jpg").write_bytes(b"")
+        dot_dir = tmp_path / ".hidden"
+        dot_dir.mkdir()
+        (dot_dir / "shadow.jpg").write_bytes(b"")
+        # macOS Spotlight dir
+        spotlight = tmp_path / ".Spotlight-V100"
+        spotlight.mkdir()
+        (spotlight / "index.jpg").write_bytes(b"")
+        jpgs, _ = classify.find_images(tmp_path, recursive=True)
+        assert [p.name for p in jpgs] == ["visible.jpg"]
+
+    def test_non_recursive_does_not_include_subdirectories(self, tmp_path):
+        (tmp_path / "root.jpg").write_bytes(b"")
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (sub / "nested.jpg").write_bytes(b"")
+        jpgs, _ = classify.find_images(tmp_path, recursive=False)
+        assert [p.name for p in jpgs] == ["root.jpg"]
+
     def test_all_raw_extensions_recognized(self, tmp_path):
         for ext in classify.RAW_EXTENSIONS:
             (tmp_path / f"x{ext}").write_bytes(b"")

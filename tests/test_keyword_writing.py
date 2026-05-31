@@ -85,6 +85,24 @@ class TestWriteKeywords:
         # Burst B: nothing written
         assert not any(p.startswith("/x/b_") for p, _ in writes)
 
+    def test_winner_path_absent_from_bursts_silently_skipped(self):
+        # If a winner's path is not in any burst (mis-matched dicts), that burst
+        # never enters qualifying_bursts and no 'select' is written for siblings.
+        # The winner's robo_9x tag IS still written (burst membership not required
+        # for the first pass), but the burst is never marked qualifying.
+        winners = [_row("/x/orphan.jpg", 0.95)]
+        bursts = {"b0": [_row("/x/other.jpg", 0.80)]}  # orphan.jpg not in any burst
+        writes = []
+        with patch.object(classify, "write_keyword_to_file",
+                          side_effect=lambda p, kw, nef_dir=None: writes.append((p, kw)) or True):
+            tiers, winner_written, select_written, errors = \
+                classify.write_keywords(winners, bursts)
+        # robo_95 written for the winner
+        assert ("/x/orphan.jpg", "robo_95") in writes
+        # no 'select' written (orphan is in no burst → qualifying_bursts is empty)
+        assert select_written == 0
+        assert not any(kw == "select" for _, kw in writes)
+
     def test_exiftool_failure_counted_as_error(self):
         winners = [_row("/x/a.jpg", 0.95)]
         bursts  = {"b0": [_row("/x/a.jpg", 0.95)]}

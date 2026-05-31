@@ -137,7 +137,7 @@ def process_directory(classifier, input_dir, output_csv=None, write_xmp=True,
         input_dir: directory containing images
         output_csv: optional path to write CSV results
         write_xmp: if True, write XMP sidecars
-        confidence_threshold: only write XMP if confidence > this (use 0 to write all)
+        confidence_threshold: only write XMP if confidence >= this (use 0 to write all)
         batch_size: batch size for inference
         num_workers: number of data loader workers
     """

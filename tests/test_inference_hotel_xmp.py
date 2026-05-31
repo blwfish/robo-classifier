@@ -3,6 +3,11 @@
 Verifies that the sidecar uses Lightroom-readable keyword namespaces
 (dc:subject / lr:hierarchicalSubject via exiftool) and that the sidecar
 path is <stem>.xmp, not <filename>.xmp.
+
+Contract note: process_directory writes XMP when confidence >= confidence_threshold
+(inclusive). The old docstring incorrectly said ">". The docstring has been
+corrected; process_directory is not unit-tested here because it requires a
+full classifier object.
 """
 
 import sys

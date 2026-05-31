@@ -263,3 +263,46 @@ class TestGetRollAngle:
         # suppressing portrait angles correctly, we won't see ~90 returned).
         assert not (80.0 < abs(angle) < 100.0), \
             "get_roll_angle should suppress near-90° roll values (portrait)"
+
+    # --- mock-based threshold tests (run on any machine, no archive drive) ---
+
+    def _mock_exiftool(self, monkeypatch, roll_value):
+        """Patch subprocess.run to return a synthetic exiftool JSON response."""
+        import json
+        from unittest.mock import MagicMock
+        resp = MagicMock()
+        resp.stdout = json.dumps([{"RollAngle": roll_value}])
+        monkeypatch.setattr(ui_review.subprocess, "run", lambda *a, **kw: resp)
+
+    def test_landscape_roll_returned_as_is(self, tmp_path, monkeypatch):
+        # A normal landscape shot (roll ≈ 2°) must pass through.
+        self._mock_exiftool(monkeypatch, 2.5)
+        assert get_roll_angle(tmp_path / "x.NEF") == 2.5
+
+    def test_portrait_positive_90_suppressed(self, tmp_path, monkeypatch):
+        # roll = 90.0 → abs(abs(90) - 90) = 0 < 10 → suppress
+        self._mock_exiftool(monkeypatch, 90.0)
+        assert get_roll_angle(tmp_path / "x.NEF") == 0.0
+
+    def test_portrait_negative_90_suppressed(self, tmp_path, monkeypatch):
+        self._mock_exiftool(monkeypatch, -90.0)
+        assert get_roll_angle(tmp_path / "x.NEF") == 0.0
+
+    def test_portrait_threshold_boundary_inside_suppressed(self, tmp_path, monkeypatch):
+        # abs(abs(80.1) - 90) = 9.9 < 10 → suppress (just inside threshold)
+        self._mock_exiftool(monkeypatch, 80.1)
+        assert get_roll_angle(tmp_path / "x.NEF") == 0.0
+
+    def test_portrait_threshold_boundary_outside_returned(self, tmp_path, monkeypatch):
+        # abs(abs(80.0) - 90) = 10.0, condition is strict `<` → NOT suppressed
+        self._mock_exiftool(monkeypatch, 80.0)
+        assert get_roll_angle(tmp_path / "x.NEF") == 80.0
+
+    def test_portrait_100_degrees_suppressed(self, tmp_path, monkeypatch):
+        # abs(abs(100) - 90) = 10 — condition strict `<` → NOT suppressed
+        self._mock_exiftool(monkeypatch, 100.0)
+        assert get_roll_angle(tmp_path / "x.NEF") == 100.0
+
+    def test_zero_roll_returned(self, tmp_path, monkeypatch):
+        self._mock_exiftool(monkeypatch, 0.0)
+        assert get_roll_angle(tmp_path / "x.NEF") == 0.0

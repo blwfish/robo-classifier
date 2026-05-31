@@ -244,3 +244,34 @@ class TestBurstDedupByTime:
         # Time-based: 5s gap splits into 2 bursts, keys look like "burst_0"
         assert any(k.startswith("burst_") for k in bursts.keys())
         assert len(bursts) == 2
+
+    # --- medium-severity: threshold boundary and empty input ---
+
+    def test_gap_exactly_at_threshold_not_split(self):
+        # Condition is strict `>`, so gap == adaptive_threshold stays in one burst.
+        # adaptive_threshold = max(0.5, 0+0.1) = 0.5 (shutter=0, no adaption)
+        results, ct = self._make(["a.jpg", "b.jpg"], times=[0.0, 0.5])
+        winners, bursts = classify.burst_dedup_by_time(results, ct, threshold=0.5)
+        assert len(bursts) == 1
+
+    def test_gap_just_above_threshold_splits(self):
+        # gap = 0.5001 > 0.5 → new burst
+        results, ct = self._make(["a.jpg", "b.jpg"], times=[0.0, 0.5001])
+        winners, bursts = classify.burst_dedup_by_time(results, ct, threshold=0.5)
+        assert len(bursts) == 2
+
+    def test_empty_input_returns_empty(self):
+        winners, bursts = classify.burst_dedup_by_time([], {}, threshold=0.5)
+        assert winners == []
+        assert bursts == {}
+
+    def test_burst_dedup_filename_empty_input(self):
+        winners, bursts = classify.burst_dedup([])
+        assert winners == []
+        assert bursts == {}
+
+    def test_burst_dedup_time_empty_input_via_router(self):
+        from pathlib import Path
+        winners, bursts = classify.burst_dedup([], capture_times={}, time_threshold=0.5)
+        assert winners == []
+        assert bursts == {}
