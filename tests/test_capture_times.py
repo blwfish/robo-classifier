@@ -98,20 +98,20 @@ class TestGetCaptureTimes:
         # Entry present but shutter falls back to 0.0
         assert result[Path("/x/a.jpg")]["shutter"] == 0.0
 
-    def test_exiftool_missing_returns_empty(self, monkeypatch):
+    def test_exiftool_missing_returns_none(self, monkeypatch):
         def raise_nf(*a, **kw): raise FileNotFoundError()
         monkeypatch.setattr(classify.subprocess, "run", raise_nf)
-        assert classify.get_capture_times([Path("/x/a.jpg")]) == {}
+        assert classify.get_capture_times([Path("/x/a.jpg")]) is None
 
-    def test_exiftool_nonzero_returns_empty(self, monkeypatch):
+    def test_exiftool_nonzero_returns_none(self, monkeypatch):
         monkeypatch.setattr(classify.subprocess, "run",
                             _fake_run_factory("", returncode=1))
-        assert classify.get_capture_times([Path("/x/a.jpg")]) == {}
+        assert classify.get_capture_times([Path("/x/a.jpg")]) is None
 
-    def test_malformed_json_returns_empty(self, monkeypatch):
+    def test_malformed_json_returns_none(self, monkeypatch):
         monkeypatch.setattr(classify.subprocess, "run",
                             _fake_run_factory("not json"))
-        assert classify.get_capture_times([Path("/x/a.jpg")]) == {}
+        assert classify.get_capture_times([Path("/x/a.jpg")]) is None
 
 
 # =============================================================================

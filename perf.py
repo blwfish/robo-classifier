@@ -147,8 +147,8 @@ def _storage_class_macos(path: Path) -> str:
         if "solid state" in media_type:
             return "sata"
         return "hdd"
-    # Network volumes: AFP, SMB, NFS
-    if any(p in protocol for p in ("afp", "smb", "nfs", "apfs")):
+    # Network volumes: AFP, SMB, NFS (exact-word checks to avoid "afp" matching "apfs")
+    if any(protocol == p or protocol.startswith(p + " ") for p in ("afp", "smb", "nfs")):
         return "network"
     # Synthesized / RAM disk
     if "disk image" in media_type or "virtual" in media_type:

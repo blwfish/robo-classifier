@@ -42,6 +42,12 @@ from image_utils import (
     default_workers,
 )
 
+# Canonical CSV schema — fixed so column order is stable and both result
+# types (normal inference + decode_failed) always produce the same columns.
+RESULTS_FIELDS = ['filename', 'path', 'classification', 'confidence',
+                  'confidence_reject', 'confidence_select', 'error_class']
+WINNERS_FIELDS = RESULTS_FIELDS
+
 
 # =============================================================================
 # Classifier
@@ -101,7 +107,7 @@ class ImageDataset(Dataset):
             img = Image.open(path).convert('RGB')
             img_tensor = self.transform(img)
             return img_tensor, idx, True
-        except Exception:
+        except (OSError, SyntaxError, ValueError):
             return torch.zeros(3, 224, 224), idx, False
 
 
@@ -237,11 +243,11 @@ def get_capture_times(file_paths):
             text=True
         )
         if result.returncode != 0:
-            return {}
+            return None
 
         data = json.loads(result.stdout)
     except (subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError):
-        return {}
+        return None
 
     capture_times = {}
     for item in data:
@@ -299,8 +305,8 @@ def burst_dedup_by_time(results, capture_times, threshold=0.5):
     # Sort results by capture time
     def get_time(r):
         path = Path(r['path'])
-        ct = capture_times.get(path, {})
-        return ct.get('timestamp', 0)
+        ct = capture_times.get(path)
+        return ct.get('timestamp', 0) if ct else 0
 
     sorted_results = sorted(results, key=get_time)
 
@@ -308,22 +314,27 @@ def burst_dedup_by_time(results, capture_times, threshold=0.5):
     bursts = defaultdict(list)
     burst_id = 0
 
+    prev_timestamp = None
     for i, r in enumerate(sorted_results):
         path = Path(r['path'])
-        ct = capture_times.get(path, {})
-        timestamp = ct.get('timestamp', 0)
-        shutter = ct.get('shutter', 0)
+        ct = capture_times.get(path)
+        timestamp = ct.get('timestamp') if ct else None
+        shutter = ct.get('shutter', 0) if ct else 0
 
-        if i == 0:
+        if timestamp is None:
+            # No EXIF timestamp — assign a singleton burst so this file
+            # doesn't accidentally merge with any real-time neighbours.
+            burst_id += 1
             bursts[burst_id].append(r)
+            burst_id += 1
+            prev_timestamp = None
             continue
 
-        # Check gap to previous frame
-        prev_r = sorted_results[i - 1]
-        prev_path = Path(prev_r['path'])
-        prev_ct = capture_times.get(prev_path, {})
-        prev_timestamp = prev_ct.get('timestamp', 0)
-        prev_shutter = prev_ct.get('shutter', 0)
+        if prev_timestamp is None:
+            bursts[burst_id].append(r)
+            prev_timestamp = timestamp
+            prev_shutter = shutter
+            continue
 
         gap = timestamp - prev_timestamp
 
@@ -333,10 +344,11 @@ def burst_dedup_by_time(results, capture_times, threshold=0.5):
         adaptive_threshold = max(threshold, max(shutter, prev_shutter) + 0.20)
 
         if gap > adaptive_threshold:
-            # New burst
             burst_id += 1
 
         bursts[burst_id].append(r)
+        prev_timestamp = timestamp
+        prev_shutter = shutter
 
     # Pick best from each burst, only if classified as "select"
     winners = []
@@ -475,12 +487,14 @@ def write_keyword_to_file(target_path, keyword, nef_dir=None):
     stem = source_path.stem
 
     if nef_dir:
-        # Write XMP sidecar next to NEF
         nef_dir_path = Path(nef_dir)
-        target = nef_dir_path / f"{stem}.NEF"
-        if not target.exists():
-            target = nef_dir_path / f"{stem}.nef"
-        if not target.exists():
+        target = None
+        for ext in RAW_EXTENSIONS:
+            candidate = nef_dir_path / f"{stem}{ext}"
+            if candidate.exists():
+                target = candidate
+                break
+        if target is None:
             return False
         return write_xmp_sidecar(target, keyword)
     else:
@@ -506,10 +520,13 @@ def clear_robo_keywords(target_path, nef_dir=None):
 
     if nef_dir:
         nef_dir_path = Path(nef_dir)
-        target = nef_dir_path / f"{stem}.NEF"
-        if not target.exists():
-            target = nef_dir_path / f"{stem}.nef"
-        if not target.exists():
+        target = None
+        for ext in RAW_EXTENSIONS:
+            candidate = nef_dir_path / f"{stem}{ext}"
+            if candidate.exists():
+                target = candidate
+                break
+        if target is None:
             return False
         target_file = target.with_suffix('.xmp')
         if not target_file.exists():
@@ -829,7 +846,7 @@ def run_pipeline(
     if not dry_run and results:
         print(f"\nWriting full results to {results_csv}")
         with open(results_csv, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=results[0].keys())
+            writer = csv.DictWriter(f, fieldnames=RESULTS_FIELDS, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(results)
 
@@ -845,7 +862,14 @@ def run_pipeline(
     capture_times = {}
     if burst_threshold is not None and burst_threshold > 0:
         all_paths = [Path(r['path']) for r in classified_results]
-        capture_times = get_capture_times(all_paths)
+        ct = get_capture_times(all_paths)
+        if ct is None:
+            print("WARNING: exiftool failed to extract capture times — "
+                  "falling back to filename-based burst grouping. "
+                  "Check exiftool is installed and the files are readable.")
+            burst_threshold = None
+        else:
+            capture_times = ct
 
     winners, bursts = burst_dedup(classified_results, capture_times, burst_threshold)
     print(f"Reduced {len(classified_results)} images to {len(winners)} burst winners")
@@ -853,7 +877,7 @@ def run_pipeline(
     winners_csv = output_dir / "winners.csv"
     if not dry_run and winners:
         with open(winners_csv, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=winners[0].keys())
+            writer = csv.DictWriter(f, fieldnames=WINNERS_FIELDS, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(winners)
 

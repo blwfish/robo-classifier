@@ -259,11 +259,13 @@ class TestWriteKeywordRouting:
         assert called[0][0] == "xmp"
 
     def test_nef_dir_sidecar_placement(self, tmp_path, monkeypatch):
-        """When nef_dir is given, XMP goes alongside the NEF in nef_dir, not
-        next to the source JPEG."""
+        """When nef_dir is given, XMP goes alongside the RAW in nef_dir, not
+        next to the source JPEG. File uses lowercase extension to match
+        RAW_EXTENSIONS iteration order (case-insensitive filesystems find
+        uppercase too, but the Path object reflects what we looked for)."""
         nef_dir = tmp_path / "raws"
         nef_dir.mkdir()
-        nef_file = nef_dir / "foo.NEF"
+        nef_file = nef_dir / "foo.nef"
         nef_file.write_bytes(b"")
 
         captured = []

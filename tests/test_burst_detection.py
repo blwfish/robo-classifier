@@ -216,11 +216,12 @@ class TestBurstDedupByTime:
         # a + b cluster, c alone
         assert len(bursts) == 2
 
-    def test_missing_capture_time_treated_as_zero(self):
-        # Frames without metadata all get timestamp=0, clustering them together
+    def test_missing_capture_time_becomes_singleton(self):
+        # Frames absent from capture_times get their own singleton burst so
+        # they don't accidentally cluster with real-time neighbours.
         results = [_result("a.jpg", 0.9), _result("b.jpg", 0.95)]
         winners, bursts = classify.burst_dedup_by_time(results, {}, threshold=0.5)
-        assert len(bursts) == 1
+        assert len(bursts) == 2
 
     def test_routing_falls_back_to_filename_without_threshold(self):
         """burst_dedup() without time_threshold should use filename grouping."""

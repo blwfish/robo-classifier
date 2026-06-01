@@ -432,7 +432,7 @@ def ingest(
                 "dest": dest_path.name,
             })
 
-        except Exception as e:
+        except OSError as e:
             errors += 1
             emit({
                 "type": "file_result",
