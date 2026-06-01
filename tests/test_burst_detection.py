@@ -20,18 +20,18 @@ class TestParseBurstBase:
         assert classify.parse_burst_base("2025-04-25-Z9_BLW0124.jpg") == \
                "2025-04-25-Z9_BLW0124"
 
-    def test_single_burst_suffix_stripped(self):
+    def test_lightroom_collision_suffix_preserved(self):
+        # A Lightroom collision rename (-3) must NOT be stripped. These are
+        # unrelated shots that happen to share a sequence number; stripping
+        # the suffix would merge them into one burst and lose a keeper.
         assert classify.parse_burst_base("2025-04-25-Z9_BLW0124-3.jpg") == \
-               "2025-04-25-Z9_BLW0124"
+               "2025-04-25-Z9_BLW0124-3"
 
-    def test_multiple_burst_suffixes_stripped(self):
-        # -3-2 means "third burst variant, second edit" or similar — strip both
+    def test_multiple_collision_suffixes_preserved(self):
         assert classify.parse_burst_base("2025-04-25-Z9_BLW0124-3-2.jpg") == \
-               "2025-04-25-Z9_BLW0124"
+               "2025-04-25-Z9_BLW0124-3-2"
 
     def test_long_numeric_suffix_preserved(self):
-        # A 6-digit trailing number is a sequence number, not a burst variant —
-        # stripping it would collapse unrelated frames into one "burst"
         assert classify.parse_burst_base("2026-01-31-PCA-Sebring-023573.jpg") == \
                "2026-01-31-PCA-Sebring-023573"
 
@@ -42,12 +42,11 @@ class TestParseBurstBase:
     def test_no_dashes(self):
         assert classify.parse_burst_base("IMG_1234.jpg") == "IMG_1234"
 
-    def test_two_digit_suffix_stripped(self):
-        # 1-2 digit suffixes are burst variants
-        assert classify.parse_burst_base("BLW0124-12.jpg") == "BLW0124"
+    def test_short_numeric_suffix_preserved(self):
+        # Lightroom collision renames with short suffixes must not be stripped
+        assert classify.parse_burst_base("BLW0124-12.jpg") == "BLW0124-12"
 
-    def test_three_digit_suffix_preserved(self):
-        # 3+ digit trailing number is probably a sequence number, not a variant
+    def test_long_numeric_suffix_also_preserved(self):
         assert classify.parse_burst_base("BLW0124-123.jpg") == "BLW0124-123"
 
 
@@ -114,49 +113,41 @@ class TestBurstDedupByFilename:
         assert winners[0]["filename"] == "BLW0001.jpg"
         assert list(bursts.keys()) == ["BLW0001"]
 
-    def test_burst_picks_highest_confidence(self):
+    def test_each_unique_filename_is_own_burst(self):
+        # With no suffix stripping, each file is its own singleton burst.
+        # All three select frames produce winners — no deduplication.
         results = [
-            _result("BLW0001-1.jpg", 0.70),
-            _result("BLW0001-2.jpg", 0.95),   # winner
-            _result("BLW0001-3.jpg", 0.85),
+            _result("BLW0001.jpg", 0.70),
+            _result("BLW0002.jpg", 0.95),
+            _result("BLW0003.jpg", 0.85),
         ]
+        winners, bursts = classify.burst_dedup(results)
+        assert len(winners) == 3
+        assert set(bursts.keys()) == {"BLW0001", "BLW0002", "BLW0003"}
+
+    def test_reject_produces_no_winner(self):
+        results = [_result("BLW0001.jpg", 0.2, cls="reject")]
+        winners, bursts = classify.burst_dedup(results)
+        assert winners == []
+        assert "BLW0001" in bursts
+
+    def test_select_produces_winner(self):
+        results = [_result("BLW0001.jpg", 0.95, cls="select")]
         winners, bursts = classify.burst_dedup(results)
         assert len(winners) == 1
-        assert winners[0]["filename"] == "BLW0001-2.jpg"
-        # All three frames are grouped together
-        assert len(bursts["BLW0001"]) == 3
+        assert winners[0]["filename"] == "BLW0001.jpg"
 
-    def test_reject_burst_produces_no_winner(self):
-        # Best-in-burst is classified 'reject' → no winner even if it's the max
+    def test_lightroom_collision_rename_is_independent_burst(self):
+        # BLW0001-2.jpg is a Lightroom collision rename of a different file —
+        # it must NOT be grouped with BLW0001.jpg; both are separate winners.
         results = [
-            _result("BLW0001-1.jpg", 0.2, cls="reject"),
-            _result("BLW0001-2.jpg", 0.4, cls="reject"),
-        ]
-        winners, bursts = classify.burst_dedup(results)
-        assert winners == []
-        assert len(bursts["BLW0001"]) == 2
-
-    def test_mixed_burst_winner_must_be_select(self):
-        # Best confidence is on a 'reject' frame — no winner, even though some
-        # frames in the burst are 'select'. This matches the code: only the
-        # top confidence_select frame is considered, then its classification
-        # is checked.
-        results = [
-            _result("BLW0001-1.jpg", 0.95, cls="reject"),   # top conf
-            _result("BLW0001-2.jpg", 0.80, cls="select"),
-        ]
-        winners, bursts = classify.burst_dedup(results)
-        assert winners == []
-
-    def test_multiple_bursts_independent(self):
-        results = [
-            _result("BLW0001-1.jpg", 0.95),
+            _result("BLW0001.jpg",   0.95),
             _result("BLW0001-2.jpg", 0.80),
-            _result("BLW0002-1.jpg", 0.92),
         ]
         winners, bursts = classify.burst_dedup(results)
         assert len(winners) == 2
-        assert set(bursts.keys()) == {"BLW0001", "BLW0002"}
+        assert "BLW0001"   in bursts
+        assert "BLW0001-2" in bursts
 
 
 # =============================================================================
@@ -234,12 +225,14 @@ class TestBurstDedupByTime:
     def test_routing_falls_back_to_filename_without_threshold(self):
         """burst_dedup() without time_threshold should use filename grouping."""
         results = [
-            _result("BLW0001-1.jpg", 0.9),
-            _result("BLW0001-2.jpg", 0.95),
+            _result("BLW0001.jpg", 0.9),
+            _result("BLW0002.jpg", 0.95),
         ]
         winners, bursts = classify.burst_dedup(results)
-        # Filename-based: single burst keyed by "BLW0001"
+        # Filename-based: each unique stem is its own burst
         assert "BLW0001" in bursts
+        assert "BLW0002" in bursts
+        assert len(bursts) == 2
 
     def test_routing_uses_time_when_threshold_provided(self):
         from pathlib import Path

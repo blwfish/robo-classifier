@@ -208,21 +208,16 @@ def run_inference(classifier, image_files, batch_size=32, num_workers=4, origina
 
 def parse_burst_base(filename):
     """
-    Extract base frame identifier from filename.
-    Only strips SHORT trailing number suffixes (1-2 digits) which indicate burst variants.
-    Examples:
-        2025-04-25-Z9_BLW0124.jpg -> 2025-04-25-Z9_BLW0124
-        2025-04-25-Z9_BLW0124-3.jpg -> 2025-04-25-Z9_BLW0124
-        2025-04-25-Z9_BLW0124-3-2.jpg -> 2025-04-25-Z9_BLW0124
-        2026-01-31-PCA-Sebring-023573.jpg -> 2026-01-31-PCA-Sebring-023573 (keeps long numbers)
+    Extract base frame identifier from filename for burst grouping.
+
+    Returns the bare stem (no extension). No suffix stripping is performed:
+    the cameras in this workflow do not append burst frame numbers, and the
+    only trailing -N suffixes that appear are Lightroom collision renames
+    (a different file that happened to share the same sequence number).
+    Stripping those would incorrectly merge unrelated shots into one burst.
+    Use --burst_threshold for actual burst grouping by capture time.
     """
-    stem = Path(filename).stem
-    # Remove trailing -N suffixes where N is 1-2 digits (burst variants like -2, -3)
-    # Don't strip longer numbers (like -023573) which are likely sequence numbers
-    match = re.match(r'^(.+?)(-\d{1,2})*$', stem)
-    if match:
-        return match.group(1)
-    return stem
+    return Path(filename).stem
 
 
 def get_capture_times(file_paths):
