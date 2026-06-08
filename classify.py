@@ -80,6 +80,14 @@ class ImageClassifier:
         self.class_names = checkpoint['class_names']
         self.class_to_idx = checkpoint['class_to_idx']
 
+        required = {'reject', 'select'}
+        if not required.issubset(self.class_to_idx.keys()):
+            raise ValueError(
+                f"Model has class names {self.class_names!r} but the pipeline "
+                f"requires {sorted(required)!r}. "
+                "Re-train with 'select' and 'reject' labels."
+            )
+
         print(f"Classes: {self.class_names}")
         print(f"Using device: {self.device}")
 
@@ -234,18 +242,22 @@ def get_capture_times(file_paths):
     if not file_paths:
         return {}
 
-    # Use exiftool JSON output for batch extraction
+    # Use exiftool JSON output for batch extraction.
+    # Chunk to stay under ARG_MAX (~256 KB on macOS; 500 paths × ~60 chars ≈ 30 KB).
     paths_str = [str(p) for p in file_paths]
+    data = []
     try:
-        result = subprocess.run(
-            ['exiftool', '-json', '-DateTimeOriginal', '-SubSecTimeOriginal', '-ExposureTime'] + paths_str,
-            capture_output=True,
-            text=True
-        )
-        if result.returncode != 0:
-            return None
-
-        data = json.loads(result.stdout)
+        for start in range(0, len(paths_str), 500):
+            chunk = paths_str[start:start + 500]
+            result = subprocess.run(
+                ['exiftool', '-json', '-DateTimeOriginal', '-SubSecTimeOriginal',
+                 '-ExposureTime'] + chunk,
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                return None
+            data.extend(json.loads(result.stdout))
     except (subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError):
         return None
 
@@ -263,8 +275,17 @@ def get_capture_times(file_paths):
         try:
             # Parse "2026:01:31 11:12:34" format
             dt = datetime.strptime(dt_str, '%Y:%m:%d %H:%M:%S')
-            # Add subseconds
-            subsec_float = float(f'0.{subsec}') if subsec else 0.0
+            # Add subseconds. SubSecTimeOriginal is normally digit-only ('500'
+            # meaning 0.500 s), but some cameras write it as a decimal ('0.5').
+            subsec_str = str(subsec) if subsec else ''
+            if subsec_str:
+                if '.' in subsec_str:
+                    # Already a decimal — use the fractional part only.
+                    subsec_float = float(subsec_str) % 1.0
+                else:
+                    subsec_float = float(f'0.{subsec_str}')
+            else:
+                subsec_float = 0.0
             timestamp = dt.timestamp() + subsec_float
         except (ValueError, TypeError):
             continue
@@ -408,6 +429,13 @@ def get_tier_keyword(confidence):
     return None
 
 
+def _keyword_hierarchy(keyword):
+    """HierarchicalSubject value for a keyword — matches embed_keyword_in_jpeg."""
+    if keyword.startswith('robo_'):
+        return f"AI keywords|robo|{keyword}"
+    return f"AI keywords|{keyword}"
+
+
 def write_xmp_sidecar(target_path, keyword):
     """
     Write keyword to XMP sidecar for RAW file.
@@ -415,6 +443,7 @@ def write_xmp_sidecar(target_path, keyword):
     """
     target_path = Path(target_path)
     xmp_path = target_path.with_suffix('.xmp')
+    hierarchy = _keyword_hierarchy(keyword)
 
     try:
         # If XMP exists, update it; otherwise create from RAW metadata
@@ -426,7 +455,7 @@ def write_xmp_sidecar(target_path, keyword):
                     '-overwrite_original',
                     f'-Keywords+={keyword}',
                     f'-Subject+={keyword}',
-                    f'-HierarchicalSubject+=robo|{keyword}',
+                    f'-HierarchicalSubject+={hierarchy}',
                     str(xmp_path)
                 ],
                 capture_output=True,
@@ -440,7 +469,7 @@ def write_xmp_sidecar(target_path, keyword):
                     '-tagsfromfile', str(target_path),
                     f'-Keywords+={keyword}',
                     f'-Subject+={keyword}',
-                    f'-HierarchicalSubject+=robo|{keyword}',
+                    f'-HierarchicalSubject+={hierarchy}',
                     '-o', str(xmp_path)
                 ],
                 capture_output=True,
@@ -453,12 +482,7 @@ def write_xmp_sidecar(target_path, keyword):
 
 def embed_keyword_in_jpeg(jpeg_path, keyword):
     """Embed keyword directly into JPEG using exiftool."""
-    # Determine hierarchy based on keyword type
-    if keyword.startswith('robo_'):
-        hierarchy = f"AI keywords|robo|{keyword}"
-    else:  # select
-        hierarchy = f"AI keywords|{keyword}"
-
+    hierarchy = _keyword_hierarchy(keyword)
     try:
         result = subprocess.run(
             [
@@ -562,7 +586,7 @@ def clear_robo_keywords(target_path, nef_dir=None):
         return False
 
 
-def write_keywords(winners, bursts, nef_dir=None):
+def write_keywords(winners, bursts, nef_dir=None, clear=True):
     """
     Write tiered keywords to winner images and 'select' to all burst siblings.
     - Winners >= 0.90 get robo_90 through robo_99 keyword (1% increments)
@@ -572,6 +596,10 @@ def write_keywords(winners, bursts, nef_dir=None):
         winners: list of winner results (best frame per burst)
         bursts: dict mapping burst key to list of all frames
         nef_dir: optional directory for NEF files (writes XMP sidecars there)
+        clear: if True, clear stale robo_9x/select tags from qualifying bursts
+               before writing. Only bursts that receive new tags are touched —
+               bursts with no qualifying winner this run are left untouched so
+               keywords from a prior run survive a re-run that finds nothing new.
     """
     tier_counts = {f"robo_{i}": 0 for i in range(90, 100)}
     tier_counts["below_threshold"] = 0
@@ -579,43 +607,47 @@ def write_keywords(winners, bursts, nef_dir=None):
     select_written = 0
     errors = 0
 
-    # Clear any stale robo_9x / select keywords from a previous run so that
-    # tier changes after threshold tuning don't accumulate. Auto-clearing is
-    # the right default today, but may need to become opt-in once the upper
-    # layers support multi-model merging or incremental keyword workflows.
-    all_frames = {frame['path'] for frames in bursts.values() for frame in frames}
-    for path in all_frames:
-        clear_robo_keywords(path, nef_dir)
-
     # Build reverse lookup: path -> burst_key
     path_to_burst = {}
     for burst_key, frames in bursts.items():
         for frame in frames:
             path_to_burst[frame['path']] = burst_key
 
-    # Track which bursts have winners above threshold
+    # Identify qualifying winners before touching any files, so that a run
+    # producing zero qualifiers leaves all existing keywords intact.
     qualifying_bursts = set()
-
-    # First pass: write robo_9x to winners above threshold
+    winner_kws = {}  # path -> keyword (all qualifying winners, burst or orphan)
     for row in winners:
         confidence = row['confidence_select']
         keyword = get_tier_keyword(confidence)
-
         if keyword is None:
             tier_counts["below_threshold"] += 1
             continue
-
         tier_counts[keyword] += 1
         burst_key = path_to_burst.get(row['path'])
         if burst_key:
             qualifying_bursts.add(burst_key)
+        winner_kws[row['path']] = keyword
 
-        if write_keyword_to_file(row['path'], keyword, nef_dir):
+    if not winner_kws:
+        # Nothing qualifies — leave all existing keywords intact.
+        return tier_counts, 0, 0, 0
+
+    # Clear stale keywords only from bursts that will be re-tagged.
+    # Winners with no burst membership (orphans) don't trigger a clear.
+    if clear and qualifying_bursts:
+        to_clear = {frame['path'] for bk in qualifying_bursts for frame in bursts[bk]}
+        for path in to_clear:
+            clear_robo_keywords(path, nef_dir)
+
+    # Write robo_9x tier keywords to all qualifying winners (including orphans).
+    for path, keyword in winner_kws.items():
+        if write_keyword_to_file(path, keyword, nef_dir):
             winner_written += 1
         else:
             errors += 1
 
-    # Second pass: write 'select' to all frames in qualifying bursts
+    # Write 'select' to all frames in qualifying bursts
     for burst_key in qualifying_bursts:
         for frame in bursts[burst_key]:
             if write_keyword_to_file(frame['path'], 'select', nef_dir):
@@ -867,6 +899,11 @@ def run_pipeline(
             print("WARNING: exiftool failed to extract capture times — "
                   "falling back to filename-based burst grouping. "
                   "Check exiftool is installed and the files are readable.")
+            burst_threshold = None
+        elif not ct:
+            print("WARNING: no capture timestamps found in EXIF "
+                  "(all files are missing DateTimeOriginal) — "
+                  "falling back to filename-based burst grouping.")
             burst_threshold = None
         else:
             capture_times = ct

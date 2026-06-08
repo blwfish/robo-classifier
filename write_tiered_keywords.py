@@ -76,11 +76,14 @@ def main():
 
         if args.nef_dir:
             nef_dir = Path(args.nef_dir)
-            target = nef_dir / f"{stem}.NEF"
-            if not target.exists():
-                target = nef_dir / f"{stem}.nef"
-            if not target.exists():
-                print(f"  WARNING: No NEF found for {stem}")
+            target = None
+            for ext in RAW_EXTENSIONS:
+                candidate = nef_dir / f"{stem}{ext}"
+                if candidate.exists():
+                    target = candidate
+                    break
+            if target is None:
+                print(f"  WARNING: No RAW file found for {stem}")
                 errors += 1
                 continue
             use_xmp = True

@@ -6,6 +6,7 @@ Shared utilities for finding images and extracting RAW previews.
 Used by classify.py, junk_filter.py, and (future) UI code.
 """
 
+import hashlib
 import os
 import select
 import subprocess
@@ -104,6 +105,14 @@ class ExiftoolProcess:
         while True:
             readable, _, _ = select.select([self.process.stdout], [], [], 30)
             if not readable:
+                # Timeout: exiftool is alive but stopped writing — the pipe state
+                # is unrecoverable (stale output will corrupt the next read).
+                # Kill the process; _start() will respawn it on the next call.
+                try:
+                    self.process.kill()
+                except OSError:
+                    pass
+                self.process = None
                 break
 
             chunk = self.process.stdout.read1(chunk_size) if hasattr(self.process.stdout, 'read1') else self.process.stdout.read(chunk_size)
@@ -147,7 +156,8 @@ def _extract_one_rawpy(raw_path, temp_dir, max_edge=None):
     Returns (raw_path, preview_path) on success or (raw_path, None) on failure.
     """
     import rawpy
-    preview_path = Path(temp_dir) / f"{raw_path.stem}_preview.jpg"
+    path_hash = hashlib.md5(str(raw_path).encode()).hexdigest()[:8]
+    preview_path = Path(temp_dir) / f"{raw_path.stem}_{path_hash}_preview.jpg"
     try:
         with rawpy.imread(str(raw_path)) as raw:
             thumb = raw.extract_thumb()
@@ -181,7 +191,8 @@ def _extract_one_exiftool_worker(chunk, temp_dir, done, lock, total, progress_cb
     local_failed = []
     with ExiftoolProcess() as et:
         for raw_path in chunk:
-            preview_path = Path(temp_dir) / f"{raw_path.stem}_preview.jpg"
+            path_hash = hashlib.md5(str(raw_path).encode()).hexdigest()[:8]
+            preview_path = Path(temp_dir) / f"{raw_path.stem}_{path_hash}_preview.jpg"
             preview_data = et.execute('-b', '-PreviewImage', str(raw_path))
             if preview_data:
                 with open(preview_path, 'wb') as f:

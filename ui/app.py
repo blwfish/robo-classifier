@@ -436,6 +436,7 @@ class WriteKeywordsRequest(BaseModel):
     dry_run: bool = False
     clear_first: bool = True  # clear stale robo_*/select tags before writing
     nef_dir: str | None = None
+    burst_threshold: float | None = None  # if set, use time-based burst grouping
 
 
 @app.post("/api/write_keywords")
@@ -446,8 +447,8 @@ def write_keywords_endpoint(req: WriteKeywordsRequest):
     so we can re-tag select-siblings consistently.
     """
     from classify import (
-        burst_dedup, clear_robo_keywords, get_capture_times,
-        get_tier_keyword, write_keywords as _write_keywords,
+        burst_dedup, get_capture_times, get_tier_keyword,
+        write_keywords as _write_keywords,
     )
 
     d = _resolve_input_dir(req.input_dir)
@@ -455,13 +456,28 @@ def write_keywords_endpoint(req: WriteKeywordsRequest):
     if not results:
         raise HTTPException(400, "No results.csv found — run the pipeline first.")
 
-    # Rebuild bursts + winners the same way classify does (filename-based; the
-    # time-based grouping only runs when the pipeline is invoked with
-    # burst_threshold). That matches what's already in winners.csv.
+    # Filter decode_failed rows — they must not receive 'select' keywords.
+    results = [r for r in results if r.get('classification') != 'decode_failed']
+
+    # Convert confidence fields; guard against empty/malformed CSV values.
     for r in results:
-        r['confidence_select'] = float(r['confidence_select'])
-        r['confidence_reject'] = float(r.get('confidence_reject', 0.0))
-    winners_all, bursts = burst_dedup(results)
+        try:
+            r['confidence_select'] = float(r['confidence_select'])
+            r['confidence_reject'] = float(r.get('confidence_reject') or 0.0)
+        except (ValueError, TypeError):
+            r['confidence_select'] = 0.0
+            r['confidence_reject'] = 0.0
+
+    # Rebuild burst grouping — use time-based if burst_threshold supplied so
+    # select-sibling tagging matches what the pipeline originally produced.
+    capture_times = {}
+    if req.burst_threshold and req.burst_threshold > 0:
+        all_paths = [Path(r['path']) for r in results]
+        ct = get_capture_times(all_paths)
+        if ct:
+            capture_times = ct
+
+    winners_all, bursts = burst_dedup(results, capture_times, req.burst_threshold)
 
     selected = [w for w in winners_all if w['confidence_select'] >= req.low]
     if not selected:
@@ -494,27 +510,9 @@ def write_keywords_endpoint(req: WriteKeywordsRequest):
             "tier_counts": {k: v for k, v in tier_counts.items() if v > 0},
         }
 
-    # Real write: optionally clear stale keywords from the universe of files
-    # we might touch (all winners + all burst siblings of qualifying bursts).
-    if req.clear_first:
-        to_clear: set[str] = set()
-        path_to_burst = {
-            frame['path']: bk for bk, frames in bursts.items() for frame in frames
-        }
-        for w in selected:
-            kw = get_tier_keyword(w['confidence_select'])
-            if kw is None:
-                continue
-            to_clear.add(w['path'])
-            bk = path_to_burst.get(w['path'])
-            if bk:
-                for frame in bursts[bk]:
-                    to_clear.add(frame['path'])
-        for path in to_clear:
-            clear_robo_keywords(path, req.nef_dir)
-
+    # Real write: write_keywords handles clearing internally (respects clear_first).
     tier_counts, winner_written, select_written, errors = _write_keywords(
-        selected, bursts, req.nef_dir,
+        selected, bursts, req.nef_dir, clear=req.clear_first,
     )
     return {
         "ok": True,

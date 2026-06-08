@@ -209,8 +209,8 @@ class TestWriteXmpSidecar:
         assert str(raw) in args
         # Output path points at the sidecar
         assert any(str(raw.with_suffix(".xmp")) in a for a in args)
-        # Hierarchical subject uses robo| prefix
-        assert any("-HierarchicalSubject+=robo|robo_95" in a for a in args)
+        # Hierarchical subject uses unified AI keywords|robo| prefix
+        assert any("-HierarchicalSubject+=AI keywords|robo|robo_95" in a for a in args)
 
     def test_existing_sidecar_updated_not_recreated(self, tmp_path, monkeypatch):
         raw = tmp_path / "x.NEF"

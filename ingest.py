@@ -213,7 +213,14 @@ def _read_exif_batch(paths: list[Path]) -> dict[str, dict]:
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         records = json.loads(result.stdout)
-    except Exception:
+    except FileNotFoundError:
+        print("WARNING: exiftool not found — all files will use fallback timestamp/alias")
+        return {}
+    except subprocess.TimeoutExpired:
+        print("WARNING: exiftool timed out reading EXIF — all files will use fallback timestamp/alias")
+        return {}
+    except json.JSONDecodeError as e:
+        print(f"WARNING: exiftool returned unexpected output ({e}) — all files will use fallback timestamp/alias")
         return {}
 
     out: dict[str, dict] = {}
