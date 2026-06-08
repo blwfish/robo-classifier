@@ -437,6 +437,7 @@ class WriteKeywordsRequest(BaseModel):
     clear_first: bool = True  # clear stale robo_*/select tags before writing
     nef_dir: str | None = None
     burst_threshold: float | None = None  # if set, use time-based burst grouping
+    model_name: str | None = None  # if set, load accept/reject keywords from model sidecar
 
 
 @app.post("/api/write_keywords")
@@ -448,13 +449,19 @@ def write_keywords_endpoint(req: WriteKeywordsRequest):
     """
     from classify import (
         burst_dedup, get_capture_times, get_tier_keyword,
-        write_keywords as _write_keywords,
+        load_model_keywords, write_keywords as _write_keywords,
     )
 
     d = _resolve_input_dir(req.input_dir)
     results = _load_results_csv(d)
     if not results:
         raise HTTPException(400, "No results.csv found — run the pipeline first.")
+
+    model_kws = {}
+    if req.model_name:
+        from classify import MODELS_DIR
+        pt = MODELS_DIR / f"{req.model_name}.pt"
+        model_kws = load_model_keywords(pt)
 
     # Filter decode_failed rows — they must not receive 'select' keywords.
     results = [r for r in results if r.get('classification') != 'decode_failed']
@@ -511,8 +518,8 @@ def write_keywords_endpoint(req: WriteKeywordsRequest):
         }
 
     # Real write: write_keywords handles clearing internally (respects clear_first).
-    tier_counts, winner_written, select_written, errors = _write_keywords(
-        selected, bursts, req.nef_dir, clear=req.clear_first,
+    tier_counts, winner_written, select_written, _reject_written, errors = _write_keywords(
+        selected, bursts, req.nef_dir, clear=req.clear_first, model_keywords=model_kws,
     )
     return {
         "ok": True,
@@ -571,6 +578,8 @@ class TrainStartRequest(BaseModel):
     epochs: int = 15
     learning_rate: float = 1e-4
     batch_size: int = 32
+    accept_keyword: str = ""
+    reject_keyword: str = ""
 
 
 @app.get("/api/train/data_stats")
@@ -612,6 +621,8 @@ def train_start(req: TrainStartRequest):
         epochs=req.epochs,
         learning_rate=req.learning_rate,
         batch_size=req.batch_size,
+        accept_keyword=req.accept_keyword,
+        reject_keyword=req.reject_keyword,
     )
     train_runner.MANAGER.start(job)
     return {"job_id": job.id, "model_output": model_output}

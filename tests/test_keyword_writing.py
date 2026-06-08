@@ -36,13 +36,14 @@ class TestWriteKeywords:
         writes = []
         with patch.object(classify, "write_keyword_to_file",
                           side_effect=lambda p, kw, nef_dir=None: writes.append((p, kw)) or True):
-            tiers, winner_written, select_written, errors = \
+            tiers, winner_written, select_written, reject_written, errors = \
                 classify.write_keywords(winners, bursts)
         # /x/a.jpg tagged with robo_95 (pass 1) and 'select' (pass 2)
         assert ("/x/a.jpg", "robo_95") in writes
         assert ("/x/a.jpg", "select") in writes
         assert winner_written == 1
         assert select_written == 1
+        assert reject_written == 0
         assert errors == 0
         assert tiers["robo_95"] == 1
 
@@ -52,11 +53,12 @@ class TestWriteKeywords:
         writes = []
         with patch.object(classify, "write_keyword_to_file",
                           side_effect=lambda p, kw, nef_dir=None: writes.append((p, kw)) or True):
-            tiers, winner_written, select_written, errors = \
+            tiers, winner_written, select_written, reject_written, errors = \
                 classify.write_keywords(winners, bursts)
         assert writes == []
         assert winner_written == 0
         assert select_written == 0
+        assert reject_written == 0
         assert tiers["below_threshold"] == 1
 
     def test_non_winning_burst_members_get_select_only_if_winner_qualifies(self):
@@ -95,7 +97,7 @@ class TestWriteKeywords:
         writes = []
         with patch.object(classify, "write_keyword_to_file",
                           side_effect=lambda p, kw, nef_dir=None: writes.append((p, kw)) or True):
-            tiers, winner_written, select_written, errors = \
+            tiers, winner_written, select_written, reject_written, errors = \
                 classify.write_keywords(winners, bursts)
         # robo_95 written for the winner
         assert ("/x/orphan.jpg", "robo_95") in writes
@@ -108,7 +110,7 @@ class TestWriteKeywords:
         bursts  = {"b0": [_row("/x/a.jpg", 0.95)]}
         with patch.object(classify, "write_keyword_to_file", return_value=False), \
              patch.object(classify, "clear_robo_keywords", return_value=True):
-            tiers, ww, sw, errors = classify.write_keywords(winners, bursts)
+            tiers, ww, sw, rw, errors = classify.write_keywords(winners, bursts)
         # One error for the winner + one for the select sweep
         assert errors == 2
         assert ww == 0
@@ -125,7 +127,7 @@ class TestWriteKeywords:
                   for fn, c in [("/x/a.jpg", 0.91), ("/x/b.jpg", 0.97),
                                 ("/x/c.jpg", 0.95), ("/x/d.jpg", 0.80)]}
         with patch.object(classify, "write_keyword_to_file", return_value=True):
-            tiers, _, _, _ = classify.write_keywords(winners, bursts)
+            tiers, _, _, _, _ = classify.write_keywords(winners, bursts)
         assert tiers["robo_91"] == 1
         assert tiers["robo_95"] == 1
         assert tiers["robo_97"] == 1
@@ -144,6 +146,130 @@ class TestWriteKeywords:
                               captured.append(nef_dir) or True):
             classify.write_keywords(winners, bursts, nef_dir="/raw/")
         assert all(d == "/raw/" for d in captured)
+
+    # ---- model_keywords tests ----
+
+    def test_accept_keyword_written_alongside_tier(self):
+        """model_keywords accept_keyword is written to each qualifying winner
+        in addition to the robo_9x tier keyword."""
+        winners = [_row("/x/a.jpg", 0.95)]
+        bursts  = {"b0": [_row("/x/a.jpg", 0.95)]}
+        writes = []
+        with patch.object(classify, "write_keyword_to_file",
+                          side_effect=lambda p, kw, nef_dir=None: writes.append((p, kw)) or True):
+            classify.write_keywords(winners, bursts,
+                                    model_keywords={"accept_keyword": "robo_pca_select"})
+        assert ("/x/a.jpg", "robo_95") in writes
+        assert ("/x/a.jpg", "robo_pca_select") in writes
+        assert ("/x/a.jpg", "select") in writes
+
+    def test_reject_keyword_written_to_non_winners(self):
+        """model_keywords reject_keyword is written to burst members that are
+        not the qualifying winner."""
+        winners = [_row("/x/a_best.jpg", 0.95)]
+        bursts  = {"b0": [_row("/x/a_best.jpg", 0.95), _row("/x/a_sib.jpg", 0.70)]}
+        writes = []
+        with patch.object(classify, "write_keyword_to_file",
+                          side_effect=lambda p, kw, nef_dir=None: writes.append((p, kw)) or True):
+            tiers, ww, sw, rw, errors = classify.write_keywords(
+                winners, bursts,
+                model_keywords={"reject_keyword": "robo_pca_reject"},
+            )
+        assert ("/x/a_sib.jpg", "robo_pca_reject") in writes
+        # Winner itself must NOT receive the reject keyword
+        assert ("/x/a_best.jpg", "robo_pca_reject") not in writes
+        assert rw == 1
+
+    def test_reject_keyword_not_written_when_burst_below_threshold(self):
+        """Reject keyword is only written for bursts with a qualifying winner.
+        Bursts where no frame qualifies are left completely untouched."""
+        winners = [_row("/x/b_best.jpg", 0.85)]  # below 0.90
+        bursts  = {"b0": [_row("/x/b_best.jpg", 0.85), _row("/x/b_sib.jpg", 0.60)]}
+        writes = []
+        with patch.object(classify, "write_keyword_to_file",
+                          side_effect=lambda p, kw, nef_dir=None: writes.append((p, kw)) or True):
+            classify.write_keywords(winners, bursts,
+                                    model_keywords={"reject_keyword": "robo_pca_reject"})
+        assert writes == []
+
+    def test_clear_includes_extra_keywords(self):
+        """clear_robo_keywords is called with extra_keywords containing the
+        model's accept and reject keywords when clear=True."""
+        winners = [_row("/x/a.jpg", 0.95)]
+        bursts  = {"b0": [_row("/x/a.jpg", 0.95)]}
+        cleared_extra = []
+        def fake_clear(path, nef_dir=None, extra_keywords=None):
+            if extra_keywords:
+                cleared_extra.extend(extra_keywords)
+            return True
+        with patch.object(classify, "write_keyword_to_file", return_value=True), \
+             patch.object(classify, "clear_robo_keywords", side_effect=fake_clear):
+            classify.write_keywords(
+                winners, bursts, clear=True,
+                model_keywords={"accept_keyword": "robo_pca_select",
+                                "reject_keyword": "robo_pca_reject"},
+            )
+        assert "robo_pca_select" in cleared_extra
+        assert "robo_pca_reject" in cleared_extra
+
+    def test_no_model_keywords_no_extra_clear(self):
+        """Without model_keywords, extra_keywords passed to clear is None."""
+        winners = [_row("/x/a.jpg", 0.95)]
+        bursts  = {"b0": [_row("/x/a.jpg", 0.95)]}
+        clear_calls = []
+        def fake_clear(path, nef_dir=None, extra_keywords=None):
+            clear_calls.append(extra_keywords)
+            return True
+        with patch.object(classify, "write_keyword_to_file", return_value=True), \
+             patch.object(classify, "clear_robo_keywords", side_effect=fake_clear):
+            classify.write_keywords(winners, bursts, clear=True)
+        assert all(ek is None for ek in clear_calls)
+
+
+# =============================================================================
+# load_model_keywords
+# =============================================================================
+
+class TestLoadModelKeywords:
+    def test_returns_keywords_from_sidecar(self, tmp_path):
+        import json
+        pt = tmp_path / "pca.pt"
+        pt.write_bytes(b"")
+        sidecar = tmp_path / "pca.json"
+        sidecar.write_text(json.dumps({
+            "description": "PCA model",
+            "accept_keyword": "robo_pca_select",
+            "reject_keyword": "robo_pca_reject",
+        }))
+        kws = classify.load_model_keywords(pt)
+        assert kws["accept_keyword"] == "robo_pca_select"
+        assert kws["reject_keyword"] == "robo_pca_reject"
+
+    def test_returns_none_when_no_sidecar(self, tmp_path):
+        pt = tmp_path / "model.pt"
+        pt.write_bytes(b"")
+        kws = classify.load_model_keywords(pt)
+        assert kws["accept_keyword"] is None
+        assert kws["reject_keyword"] is None
+
+    def test_returns_none_when_fields_absent(self, tmp_path):
+        import json
+        pt = tmp_path / "model.pt"
+        pt.write_bytes(b"")
+        sidecar = tmp_path / "model.json"
+        sidecar.write_text(json.dumps({"description": "no keywords here"}))
+        kws = classify.load_model_keywords(pt)
+        assert kws["accept_keyword"] is None
+        assert kws["reject_keyword"] is None
+
+    def test_returns_none_on_malformed_sidecar(self, tmp_path):
+        pt = tmp_path / "model.pt"
+        pt.write_bytes(b"")
+        sidecar = tmp_path / "model.json"
+        sidecar.write_text("not valid json {{{{")
+        kws = classify.load_model_keywords(pt)
+        assert kws["accept_keyword"] is None
+        assert kws["reject_keyword"] is None
 
 
 # =============================================================================
@@ -362,3 +488,36 @@ class TestClearRoboKeywords:
         def raise_nf(*a, **kw): raise FileNotFoundError("exiftool")
         monkeypatch.setattr(classify.subprocess, "run", raise_nf)
         assert classify.clear_robo_keywords(str(jpg)) is False
+
+    def test_extra_keywords_included_in_clear(self, tmp_path, monkeypatch):
+        """extra_keywords are cleared via Keywords-= and Subject-= flags."""
+        jpg = tmp_path / "a.jpg"
+        jpg.write_bytes(b"")
+        captured = []
+        monkeypatch.setattr(classify.subprocess, "run",
+                            lambda args, **kw: captured.append(args) or
+                            MagicMock(returncode=0))
+        classify.clear_robo_keywords(str(jpg),
+                                     extra_keywords=["robo_pca_select", "robo_pca_reject"])
+        args = captured[0]
+        assert "-Keywords-=robo_pca_select" in args
+        assert "-Keywords-=robo_pca_reject" in args
+        assert "-Subject-=robo_pca_select" in args
+        # Non-robo_ prefix goes under "AI keywords|" hierarchy
+        # (both fall under robo_ prefix logic check doesn't apply — these start with robo_)
+        # The hierarchical removal uses "AI keywords|robo_pca_select" path
+        assert any("robo_pca_select" in a for a in args)
+
+    def test_extra_keywords_use_flat_hierarchy(self, tmp_path, monkeypatch):
+        """A non-robo_ extra keyword gets AI keywords|{keyword} hierarchy removal,
+        not AI keywords|robo|{keyword}."""
+        jpg = tmp_path / "a.jpg"
+        jpg.write_bytes(b"")
+        captured = []
+        monkeypatch.setattr(classify.subprocess, "run",
+                            lambda args, **kw: captured.append(args) or
+                            MagicMock(returncode=0))
+        classify.clear_robo_keywords(str(jpg), extra_keywords=["my_custom_kw"])
+        args = captured[0]
+        assert "-HierarchicalSubject-=AI keywords|my_custom_kw" in args
+        assert not any("AI keywords|robo|my_custom_kw" in a for a in args)

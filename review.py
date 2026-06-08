@@ -441,7 +441,7 @@ def api_write_keywords():
         return jsonify({"ok": False, "error": "No images above threshold"}), 400
 
     try:
-        tier_counts, winner_written, select_written, errors = write_keywords(
+        tier_counts, winner_written, select_written, _reject_written, errors = write_keywords(
             selected, bursts, nef_dir
         )
         prefix = "(dry run) " if dry_run else ""

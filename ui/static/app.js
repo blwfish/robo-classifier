@@ -263,7 +263,16 @@ async function init() {
       || localStorage.getItem("robo.train.recentReject") || "";
     trainRejectBrowser.open(hint);
   });
-  document.getElementById("train-model-name").addEventListener("input", updateTrainGoBtn);
+  document.getElementById("train-model-name").addEventListener("input", () => {
+    updateTrainGoBtn();
+    autofillTrainKeywords();
+  });
+  document.getElementById("train-accept-kw").addEventListener("input", () => {
+    document.getElementById("train-accept-kw").dataset.userEdited = "1";
+  });
+  document.getElementById("train-reject-kw").addEventListener("input", () => {
+    document.getElementById("train-reject-kw").dataset.userEdited = "1";
+  });
   ["train-epochs", "train-lr", "train-batch", "train-test-size"].forEach(id => {
     document.getElementById(id).addEventListener("change", saveTrainHyperparams);
   });
@@ -433,6 +442,7 @@ async function onRun(ev) {
   const dry = document.getElementById("dry_run").checked;
 
   state.inputDir = inputDir;
+  state.profile = profile;
   localStorage.setItem("robo.lastInputDir", inputDir);
   document.getElementById("run-btn").disabled = true;
   document.getElementById("progress-box").hidden = false;
@@ -1249,6 +1259,7 @@ async function runWriteKeywords(dryRun) {
       low: thresholdState.low,
       dry_run: dryRun,
       clear_first: document.getElementById("clear-first").checked,
+      model_name: state.profile || null,
     };
     const data = await apiPost("/api/write_keywords", body);
     const tiers = Object.entries(data.tier_counts || {})
@@ -1411,6 +1422,20 @@ function updateTrainGoBtn() {
   document.getElementById("train-go-btn").disabled = !(sel && rej && name);
 }
 
+function autofillTrainKeywords() {
+  const name = document.getElementById("train-model-name").value.trim();
+  const acceptEl = document.getElementById("train-accept-kw");
+  const rejectEl = document.getElementById("train-reject-kw");
+  // Only auto-fill if the field is empty or was previously auto-filled
+  // (don't overwrite something the user typed manually)
+  const slug = name.replace(/[^a-z0-9_-]/gi, "_").toLowerCase();
+  if (!acceptEl.dataset.userEdited) {
+    acceptEl.value = slug ? `robo_${slug}_select` : "";
+  }
+  // Reject keyword stays blank by default — user opts in explicitly
+}
+
+
 async function updateTrainDataCount(which, path) {
   const el = document.getElementById(`train-${which}-count`);
   el.textContent = "…";
@@ -1514,10 +1539,12 @@ function drawTrainChart() {
 // ---- Stream ----
 
 async function startTraining() {
-  const selDir  = document.getElementById("train-select-dir").value.trim();
-  const rejDir  = document.getElementById("train-reject-dir").value.trim();
-  const name    = document.getElementById("train-model-name").value.trim();
-  const desc    = document.getElementById("train-model-desc").value.trim();
+  const selDir     = document.getElementById("train-select-dir").value.trim();
+  const rejDir     = document.getElementById("train-reject-dir").value.trim();
+  const name       = document.getElementById("train-model-name").value.trim();
+  const desc       = document.getElementById("train-model-desc").value.trim();
+  const acceptKw   = document.getElementById("train-accept-kw").value.trim();
+  const rejectKw   = document.getElementById("train-reject-kw").value.trim();
   const epochs  = parseInt(document.getElementById("train-epochs").value)   || 15;
   const lr      = parseFloat(document.getElementById("train-lr").value)      || 1e-4;
   const batch   = parseInt(document.getElementById("train-batch").value)     || 32;
@@ -1538,6 +1565,7 @@ async function startTraining() {
     const { job_id, model_output } = await apiPost("/api/train/start", {
       select_dir: selDir, reject_dir: rejDir,
       model_name: name, description: desc,
+      accept_keyword: acceptKw, reject_keyword: rejectKw,
       test_size: tsize, epochs, learning_rate: lr, batch_size: batch,
     });
     document.getElementById("train-done-path").textContent = model_output;

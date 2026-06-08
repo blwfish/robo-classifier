@@ -258,6 +258,18 @@
       <label class="train-field-label" style="margin-top:10px">Description <span class="train-hint">(optional, shown in profile picker)</span></label>
       <input type="text" id="train-model-desc" placeholder="PCA 2026 season" />
 
+      <h3 class="train-section-head" style="margin-top:20px">Keywords</h3>
+      <div class="train-params">
+        <label class="train-field-label">Accept keyword
+          <span class="train-hint">(also written to winners alongside robo_9x; blank = tier only)</span>
+          <input type="text" id="train-accept-kw" placeholder="e.g. robo_pca_select" />
+        </label>
+        <label class="train-field-label">Reject keyword
+          <span class="train-hint">(written to non-winning burst frames; blank = no reject tag)</span>
+          <input type="text" id="train-reject-kw" placeholder="leave blank to skip" />
+        </label>
+      </div>
+
       <h3 class="train-section-head" style="margin-top:20px">Hyperparameters</h3>
       <div class="train-params">
         <label class="train-field-label">Epochs
