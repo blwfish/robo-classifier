@@ -267,6 +267,15 @@ class TestBurstDedupByTime:
         winners, bursts = classify.burst_dedup_by_time(results, ct, threshold=0.5)
         assert len(bursts) == 2
 
+    def test_adaptive_threshold_gap_below_boundary_not_split(self):
+        # shutter=1.0 → adaptive_threshold = max(0.5, 1.0+0.20) = 1.20
+        # gap=1.199 < 1.20 → stays in one burst.
+        # (gap=1.20 exactly is untestable here: large base timestamps cause
+        # floating-point cancellation that makes the computed gap > 1.20.)
+        results, ct = self._make(["a.jpg", "b.jpg"], times=[0.0, 1.199], shutters=[1.0, 1.0])
+        winners, bursts = classify.burst_dedup_by_time(results, ct, threshold=0.5)
+        assert len(bursts) == 1
+
     def test_empty_input_returns_empty(self):
         winners, bursts = classify.burst_dedup_by_time([], {}, threshold=0.5)
         assert winners == []

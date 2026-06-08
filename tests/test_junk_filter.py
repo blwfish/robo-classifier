@@ -98,8 +98,8 @@ class TestIsEdgeChopped:
         assert _is_edge_chopped(det, IMG_W, IMG_H,
                                 self.EDGE_MARGIN, self.MIN_VIS_FRAC) is True
 
-    def test_left_touch_width_exactly_at_threshold_is_chopped(self):
-        # width == min_visible_frac * img_w: condition is `<`, so this is NOT chopped
+    def test_left_touch_width_at_threshold_not_chopped(self):
+        # width == min_visible_frac * img_w: condition is strict `<`, so NOT chopped
         det = _det(0, 100, 100, 700)   # width = 100 exactly
         assert _is_edge_chopped(det, IMG_W, IMG_H,
                                 self.EDGE_MARGIN, self.MIN_VIS_FRAC) is False
@@ -165,6 +165,13 @@ class TestIsEdgeChopped:
         assert _is_edge_chopped(det, IMG_W, IMG_H,
                                 self.EDGE_MARGIN, self.MIN_VIS_FRAC,
                                 edge_min_area_frac=0.05) is False
+
+    def test_corner_touch_height_fails_while_width_passes(self):
+        # Touches left AND top. Width=200 ≥ 100 (passes width rule),
+        # height=40 < 80 (fails height rule) → chopped.
+        det = _det(0, 0, 200, 40)
+        assert _is_edge_chopped(det, IMG_W, IMG_H,
+                                self.EDGE_MARGIN, self.MIN_VIS_FRAC) is True
 
     def test_area_at_threshold_not_chopped(self):
         # area exactly == threshold: condition is `<`, not `<=`

@@ -106,7 +106,8 @@ class TestWriteKeywords:
     def test_exiftool_failure_counted_as_error(self):
         winners = [_row("/x/a.jpg", 0.95)]
         bursts  = {"b0": [_row("/x/a.jpg", 0.95)]}
-        with patch.object(classify, "write_keyword_to_file", return_value=False):
+        with patch.object(classify, "write_keyword_to_file", return_value=False), \
+             patch.object(classify, "clear_robo_keywords", return_value=True):
             tiers, ww, sw, errors = classify.write_keywords(winners, bursts)
         # One error for the winner + one for the select sweep
         assert errors == 2

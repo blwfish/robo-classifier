@@ -183,6 +183,19 @@ class TestSetCrop:
         ok, msg = set_crop(jpeg, 0.0, 0.0, 1.0, 1.5)
         assert ok is False
 
+    def test_left_equals_right_rejected(self, tmp_path):
+        # Degenerate crop: left == right, condition is >=
+        jpeg = make_jpeg(tmp_path / "photo.jpg")
+        ok, msg = set_crop(jpeg, 0.5, 0.1, 0.5, 0.9)
+        assert ok is False
+
+    @requires_exiftool
+    def test_full_frame_crop_accepted(self, tmp_path):
+        # Boundary coordinates 0.0 and 1.0 are valid (inclusive range check)
+        jpeg = make_jpeg(tmp_path / "photo.jpg")
+        ok, _ = set_crop(jpeg, 0.0, 0.0, 1.0, 1.0)
+        assert ok is True
+
 
 # =============================================================================
 # clear_crop
@@ -298,10 +311,15 @@ class TestGetRollAngle:
         self._mock_exiftool(monkeypatch, 80.0)
         assert get_roll_angle(tmp_path / "x.NEF") == 80.0
 
-    def test_portrait_100_degrees_suppressed(self, tmp_path, monkeypatch):
+    def test_portrait_100_degrees_not_suppressed(self, tmp_path, monkeypatch):
         # abs(abs(100) - 90) = 10 — condition strict `<` → NOT suppressed
         self._mock_exiftool(monkeypatch, 100.0)
         assert get_roll_angle(tmp_path / "x.NEF") == 100.0
+
+    def test_portrait_just_inside_upper_boundary_suppressed(self, tmp_path, monkeypatch):
+        # abs(abs(99.9) - 90) = 9.9 < 10 → suppressed (symmetric with 80.1 lower boundary)
+        self._mock_exiftool(monkeypatch, 99.9)
+        assert get_roll_angle(tmp_path / "x.NEF") == 0.0
 
     def test_zero_roll_returned(self, tmp_path, monkeypatch):
         self._mock_exiftool(monkeypatch, 0.0)
