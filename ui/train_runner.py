@@ -32,6 +32,8 @@ class TrainJob:
     epochs: int
     learning_rate: float
     batch_size: int
+    accept_keyword: str = ""  # written to XMP alongside robo_9x tier for accepts
+    reject_keyword: str = ""  # written to XMP for non-winning burst frames
 
     events: queue.Queue = field(default_factory=queue.Queue)
     status: str = "pending"   # pending | preparing | training | done | error
@@ -124,6 +126,10 @@ def _write_sidecar(job: TrainJob, best_acc: float):
         "reject_dir":   job.reject_dir,
         "test_size":    job.test_size,
     }
+    if job.accept_keyword:
+        data["accept_keyword"] = job.accept_keyword
+    if job.reject_keyword:
+        data["reject_keyword"] = job.reject_keyword
     sidecar.write_text(json.dumps(data, indent=2))
 
 

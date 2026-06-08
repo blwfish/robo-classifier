@@ -530,11 +530,14 @@ def write_keyword_to_file(target_path, keyword, nef_dir=None):
             return embed_keyword_in_jpeg(target, keyword)
 
 
-def clear_robo_keywords(target_path, nef_dir=None):
+def clear_robo_keywords(target_path, nef_dir=None, extra_keywords=None):
     """
     Remove any previously-written 'select' + 'robo_9x' tags from a file
     (or its XMP sidecar). Called before re-writing keywords so tier changes
     after threshold tuning don't leave stale tags behind.
+
+    extra_keywords: optional list of additional flat keywords to clear
+    (e.g. a model's accept_keyword/reject_keyword from a prior run).
 
     Handles both the old (`robo|robo_9x`) and new (`AI keywords|robo|robo_9x`)
     hierarchical subject formats.
@@ -563,6 +566,8 @@ def clear_robo_keywords(target_path, nef_dir=None):
         target_file = source_path
 
     tags = ['select'] + [f'robo_{i}' for i in range(90, 100)]
+    if extra_keywords:
+        tags += list(extra_keywords)
     args = ['exiftool', '-overwrite_original']
     for t in tags:
         args += [f'-Keywords-={t}', f'-Subject-={t}']
@@ -572,10 +577,14 @@ def clear_robo_keywords(target_path, nef_dir=None):
                 '-HierarchicalSubject-=AI keywords|select',
                 '-HierarchicalSubject-=robo|select',
             ]
-        else:
+        elif t.startswith('robo_'):
             args += [
                 f'-HierarchicalSubject-=AI keywords|robo|{t}',
                 f'-HierarchicalSubject-=robo|{t}',
+            ]
+        else:
+            args += [
+                f'-HierarchicalSubject-=AI keywords|{t}',
             ]
     args.append(str(target_file))
 
@@ -586,11 +595,15 @@ def clear_robo_keywords(target_path, nef_dir=None):
         return False
 
 
-def write_keywords(winners, bursts, nef_dir=None, clear=True):
+def write_keywords(winners, bursts, nef_dir=None, clear=True, model_keywords=None):
     """
     Write tiered keywords to winner images and 'select' to all burst siblings.
     - Winners >= 0.90 get robo_90 through robo_99 keyword (1% increments)
     - All frames in bursts with a winner >= 0.90 get 'select' keyword
+    - If model_keywords['accept_keyword'] is set, it is also written to each
+      qualifying winner (flat accept marker alongside the tier keyword)
+    - If model_keywords['reject_keyword'] is set, it is written to all
+      non-winning frames in qualifying bursts
 
     Args:
         winners: list of winner results (best frame per burst)
@@ -600,11 +613,22 @@ def write_keywords(winners, bursts, nef_dir=None, clear=True):
                before writing. Only bursts that receive new tags are touched —
                bursts with no qualifying winner this run are left untouched so
                keywords from a prior run survive a re-run that finds nothing new.
+        model_keywords: optional dict with keys 'accept_keyword' and/or
+               'reject_keyword' from the model's JSON sidecar.
+
+    Returns:
+        (tier_counts, winner_written, select_written, reject_written, errors)
     """
+    mk = model_keywords or {}
+    accept_kw = mk.get("accept_keyword") or None
+    reject_kw = mk.get("reject_keyword") or None
+    extra_clear = [k for k in (accept_kw, reject_kw) if k]
+
     tier_counts = {f"robo_{i}": 0 for i in range(90, 100)}
     tier_counts["below_threshold"] = 0
     winner_written = 0
     select_written = 0
+    reject_written = 0
     errors = 0
 
     # Build reverse lookup: path -> burst_key
@@ -616,7 +640,7 @@ def write_keywords(winners, bursts, nef_dir=None, clear=True):
     # Identify qualifying winners before touching any files, so that a run
     # producing zero qualifiers leaves all existing keywords intact.
     qualifying_bursts = set()
-    winner_kws = {}  # path -> keyword (all qualifying winners, burst or orphan)
+    winner_kws = {}  # path -> tier keyword (all qualifying winners, burst or orphan)
     for row in winners:
         confidence = row['confidence_select']
         keyword = get_tier_keyword(confidence)
@@ -631,31 +655,42 @@ def write_keywords(winners, bursts, nef_dir=None, clear=True):
 
     if not winner_kws:
         # Nothing qualifies — leave all existing keywords intact.
-        return tier_counts, 0, 0, 0
+        return tier_counts, 0, 0, 0, 0
 
     # Clear stale keywords only from bursts that will be re-tagged.
     # Winners with no burst membership (orphans) don't trigger a clear.
     if clear and qualifying_bursts:
         to_clear = {frame['path'] for bk in qualifying_bursts for frame in bursts[bk]}
         for path in to_clear:
-            clear_robo_keywords(path, nef_dir)
+            clear_robo_keywords(path, nef_dir, extra_keywords=extra_clear or None)
 
-    # Write robo_9x tier keywords to all qualifying winners (including orphans).
+    # Write robo_9x tier keywords to all qualifying winners (including orphans),
+    # plus the optional flat accept keyword.
     for path, keyword in winner_kws.items():
         if write_keyword_to_file(path, keyword, nef_dir):
             winner_written += 1
         else:
             errors += 1
+        if accept_kw:
+            if not write_keyword_to_file(path, accept_kw, nef_dir):
+                errors += 1
 
-    # Write 'select' to all frames in qualifying bursts
+    # Write 'select' to all frames in qualifying bursts; write reject keyword
+    # to non-winning frames if the model defines one.
+    winner_paths = set(winner_kws.keys())
     for burst_key in qualifying_bursts:
         for frame in bursts[burst_key]:
             if write_keyword_to_file(frame['path'], 'select', nef_dir):
                 select_written += 1
             else:
                 errors += 1
+            if reject_kw and frame['path'] not in winner_paths:
+                if write_keyword_to_file(frame['path'], reject_kw, nef_dir):
+                    reject_written += 1
+                else:
+                    errors += 1
 
-    return tier_counts, winner_written, select_written, errors
+    return tier_counts, winner_written, select_written, reject_written, errors
 
 
 # =============================================================================
@@ -692,6 +727,23 @@ def resolve_model(args_model, args_profile):
         return pt
 
     return Path(args_model)
+
+
+def load_model_keywords(model_path):
+    """
+    Load accept_keyword / reject_keyword from the model's JSON sidecar.
+    Returns a dict; both keys are present but may be None if not set.
+    """
+    sidecar = Path(model_path).with_suffix(".json")
+    result = {"accept_keyword": None, "reject_keyword": None}
+    if sidecar.exists():
+        try:
+            meta = json.loads(sidecar.read_text())
+            result["accept_keyword"] = meta.get("accept_keyword") or None
+            result["reject_keyword"] = meta.get("reject_keyword") or None
+        except Exception:
+            pass
+    return result
 
 
 def _noop_progress(event):
@@ -746,6 +798,7 @@ def run_pipeline(
         raise RuntimeError("exiftool not found. Install with: brew install exiftool")
 
     model_path = resolve_model(model, profile)
+    model_kws = load_model_keywords(model_path)
 
     # Find images up-front so we can extract previews once and share across stages.
     jpg_files, raw_files = find_images(input_dir)
@@ -944,8 +997,8 @@ def run_pipeline(
                     tier_counts["below_threshold"] += 1
             select_count = sum(len(bursts[b]) for b in qualifying_bursts)
         else:
-            tier_counts, _winner_written, select_written, keyword_write_errors = write_keywords(
-                winners, bursts, nef_dir
+            tier_counts, _winner_written, select_written, _reject_written, keyword_write_errors = write_keywords(
+                winners, bursts, nef_dir, model_keywords=model_kws
             )
             select_count = select_written
 

@@ -25,9 +25,10 @@
     </div>
 
     <div class="menu">
-      <button class="menu-label">Library</button>
+      <button class="menu-label">Model</button>
       <ul class="menu-dropdown">
-        <li><button class="menu-item" id="library-btn">Model Library</button></li>
+        <li><button class="menu-item" id="library-btn">Library</button></li>
+        <li class="menu-sep" role="separator"></li>
         <li><button class="menu-item" id="menu-open-train">Train…</button></li>
       </ul>
     </div>
@@ -123,8 +124,6 @@
 <section id="screen-ingest" class="screen" hidden>
   <div class="toolbar">
     <h2 style="margin:0">Ingest</h2>
-    <button type="button" id="ingest-to-train">Train model →</button>
-    <button type="button" id="ingest-to-run">Skip to pipeline →</button>
   </div>
 
   <div class="ingest-layout">
@@ -257,6 +256,18 @@
       <input type="text" id="train-model-name" placeholder="e.g. pca-2026" />
       <label class="train-field-label" style="margin-top:10px">Description <span class="train-hint">(optional, shown in profile picker)</span></label>
       <input type="text" id="train-model-desc" placeholder="PCA 2026 season" />
+
+      <h3 class="train-section-head" style="margin-top:20px">Keywords</h3>
+      <div class="train-params">
+        <label class="train-field-label">Accept keyword
+          <span class="train-hint">(also written to winners alongside robo_9x; blank = tier only)</span>
+          <input type="text" id="train-accept-kw" placeholder="e.g. robo_pca_select" />
+        </label>
+        <label class="train-field-label">Reject keyword
+          <span class="train-hint">(written to non-winning burst frames; blank = no reject tag)</span>
+          <input type="text" id="train-reject-kw" placeholder="leave blank to skip" />
+        </label>
+      </div>
 
       <h3 class="train-section-head" style="margin-top:20px">Hyperparameters</h3>
       <div class="train-params">
@@ -440,8 +451,7 @@
 
 <!-- ============= SCREEN 2: Grid ============= -->
 <section id="screen-grid" class="screen" hidden>
-  <div class="toolbar">
-    <button id="back-to-run">← Run</button>
+  <div class="toolbar" id="grid-toolbar">
     <button id="back-to-threshold" hidden>← Thresholds</button>
     <span id="grid-count"></span>
     <label>
@@ -459,6 +469,9 @@
         <option value="filename">Filename</option>
       </select>
     </label>
+  </div>
+  <div id="grid-empty-state" class="placeholder" hidden>
+    No session loaded — use <strong>File → Open / Ingest…</strong> or <strong>File → Run Pipeline…</strong> to get started.
   </div>
   <div id="grid"></div>
 </section>

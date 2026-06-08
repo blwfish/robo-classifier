@@ -1,6 +1,10 @@
 // robo-classifier UI
 // Single-page vanilla JS: screen switcher + pipeline runner + grid + detail.
 
+// When opened via window.open('?screen=train') etc., this is set so init()
+// shows that screen directly instead of restoring the main session grid.
+const STANDALONE_SCREEN = new URLSearchParams(location.search).get('screen');
+
 const state = {
   inputDir: "",
   profile: null,
@@ -176,7 +180,7 @@ async function init() {
   document.getElementById("browser-close").addEventListener("click", closeBrowser);
 
   // Thresholds
-  document.getElementById("threshold-back").addEventListener("click", () => showScreen("run"));
+  document.getElementById("threshold-back").addEventListener("click", () => showScreen("grid"));
   document.getElementById("threshold-continue").addEventListener("click", () => {
     showScreen("grid");
     renderGrid();
@@ -188,7 +192,6 @@ async function init() {
   document.getElementById("write-btn").addEventListener("click", () => runWriteKeywords(false));
 
   // Grid
-  document.getElementById("back-to-run").addEventListener("click", () => showScreen("run"));
   document.getElementById("back-to-threshold").addEventListener("click", () => showScreen("threshold"));
   document.getElementById("grid-filter").addEventListener("change", renderGrid);
   document.getElementById("grid-sort").addEventListener("change", renderGrid);
@@ -227,7 +230,10 @@ async function init() {
   });
 
   // Train screen
-  document.getElementById("train-back").addEventListener("click", () => showScreen("ingest"));
+  document.getElementById("train-back").addEventListener("click", () => {
+    if (STANDALONE_SCREEN) window.close();
+    else showScreen("grid");
+  });
   document.getElementById("train-go-btn").addEventListener("click", startTraining);
   document.getElementById("train-again-btn").addEventListener("click", resetTrainScreen);
 
@@ -263,28 +269,50 @@ async function init() {
       || localStorage.getItem("robo.train.recentReject") || "";
     trainRejectBrowser.open(hint);
   });
-  document.getElementById("train-model-name").addEventListener("input", updateTrainGoBtn);
+  document.getElementById("train-model-name").addEventListener("input", () => {
+    updateTrainGoBtn();
+    autofillTrainKeywords();
+  });
+  document.getElementById("train-accept-kw").addEventListener("input", () => {
+    document.getElementById("train-accept-kw").dataset.userEdited = "1";
+  });
+  document.getElementById("train-reject-kw").addEventListener("input", () => {
+    document.getElementById("train-reject-kw").dataset.userEdited = "1";
+  });
   ["train-epochs", "train-lr", "train-batch", "train-test-size"].forEach(id => {
     document.getElementById(id).addEventListener("change", saveTrainHyperparams);
   });
   document.getElementById("train-use-model-btn").addEventListener("click", () => {
-    // Reload profiles and switch to run screen
-    refreshProfiles().then(() => showScreen("run"));
+    refreshProfiles().then(() => {
+      if (STANDALONE_SCREEN) {
+        window.open(location.pathname + '?screen=run', '_blank');
+        window.close();
+      } else {
+        showScreen("run");
+      }
+    });
   });
 
   // Library screen
   document.getElementById("library-btn").addEventListener("click", openLibrary);
-  document.getElementById("library-back").addEventListener("click", () => showScreen(state.prevScreen || "ingest"));
+  document.getElementById("library-back").addEventListener("click", () => showScreen(state.prevScreen || "grid"));
   document.getElementById("library-go-settings").addEventListener("click", openSettings);
 
   // Settings screen
   document.getElementById("settings-btn").addEventListener("click", openSettings);
-  document.getElementById("settings-back").addEventListener("click", () => showScreen(state.prevScreen || "ingest"));
+  document.getElementById("settings-back").addEventListener("click", () => showScreen(state.prevScreen || "grid"));
 
-  // Menu nav items
-  document.getElementById("menu-open-ingest").addEventListener("click", () => showScreen("ingest"));
-  document.getElementById("menu-open-run").addEventListener("click", () => showScreen("run"));
-  document.getElementById("menu-open-train").addEventListener("click", () => showScreen("train"));
+  // Menu nav items — run and train open in new windows; ingest stays in main window
+  document.getElementById("menu-open-ingest").addEventListener("click", () => {
+    showScreen("ingest");
+    initIngest();
+  });
+  document.getElementById("menu-open-run").addEventListener("click", () => {
+    window.open(location.pathname + '?screen=run', '_blank');
+  });
+  document.getElementById("menu-open-train").addEventListener("click", () => {
+    window.open(location.pathname + '?screen=train', '_blank');
+  });
   document.getElementById("menu-shortcuts").addEventListener("click", () =>
     flashToast("← → nav  •  C crop  •  L level  •  1–5 labels  •  Esc grid", 4000)
   );
@@ -308,8 +336,6 @@ async function init() {
   );
 
   // Ingest screen
-  document.getElementById("ingest-to-train").addEventListener("click", () => openTrainScreen());
-  document.getElementById("ingest-to-run").addEventListener("click", () => showScreen("run"));
   document.getElementById("refresh-cards-btn").addEventListener("click", loadCards);
   document.getElementById("add-local-btn").addEventListener("click", () => localBrowser.open(""));
   document.getElementById("ingest-go-btn").addEventListener("click", startIngest);
@@ -350,9 +376,30 @@ async function init() {
 
   document.addEventListener("keydown", onKey);
 
-  showScreen("ingest");
-  initIngest();
-  checkConfigBanner();
+  if (STANDALONE_SCREEN === 'train') {
+    await openTrainScreen();
+  } else if (STANDALONE_SCREEN === 'run') {
+    showScreen("run");
+  } else if (STANDALONE_SCREEN === 'ingest') {
+    showScreen("ingest");
+    initIngest();
+  } else {
+    // Main window: show grid, restore last session if available.
+    showScreen("grid");
+    checkConfigBanner();
+    await tryRestoreLastSession();
+  }
+}
+
+async function tryRestoreLastSession() {
+  const lastDir = localStorage.getItem("robo.lastInputDir");
+  if (!lastDir) { renderGrid(); return; }
+  state.inputDir = lastDir;
+  try {
+    await openSession();
+  } catch {
+    renderGrid();
+  }
 }
 
 // ====== Folder browser ======
@@ -433,6 +480,7 @@ async function onRun(ev) {
   const dry = document.getElementById("dry_run").checked;
 
   state.inputDir = inputDir;
+  state.profile = profile;
   localStorage.setItem("robo.lastInputDir", inputDir);
   document.getElementById("run-btn").disabled = true;
   document.getElementById("progress-box").hidden = false;
@@ -601,6 +649,9 @@ async function openSession() {
 }
 
 function renderGrid() {
+  const emptyState = document.getElementById("grid-empty-state");
+  if (emptyState) emptyState.hidden = state.images.length > 0;
+
   const filter = document.getElementById("grid-filter").value;
   const sort = document.getElementById("grid-sort").value;
 
@@ -616,7 +667,7 @@ function renderGrid() {
   state.filteredImages = imgs;
 
   document.getElementById("grid-count").textContent =
-    `${imgs.length} of ${state.images.length} images`;
+    state.images.length > 0 ? `${imgs.length} of ${state.images.length} images` : "";
 
   const grid = document.getElementById("grid");
   grid.innerHTML = "";
@@ -1249,6 +1300,7 @@ async function runWriteKeywords(dryRun) {
       low: thresholdState.low,
       dry_run: dryRun,
       clear_first: document.getElementById("clear-first").checked,
+      model_name: state.profile || null,
     };
     const data = await apiPost("/api/write_keywords", body);
     const tiers = Object.entries(data.tier_counts || {})
@@ -1411,6 +1463,20 @@ function updateTrainGoBtn() {
   document.getElementById("train-go-btn").disabled = !(sel && rej && name);
 }
 
+function autofillTrainKeywords() {
+  const name = document.getElementById("train-model-name").value.trim();
+  const acceptEl = document.getElementById("train-accept-kw");
+  const rejectEl = document.getElementById("train-reject-kw");
+  // Only auto-fill if the field is empty or was previously auto-filled
+  // (don't overwrite something the user typed manually)
+  const slug = name.replace(/[^a-z0-9_-]/gi, "_").toLowerCase();
+  if (!acceptEl.dataset.userEdited) {
+    acceptEl.value = slug ? `robo_${slug}_select` : "";
+  }
+  // Reject keyword stays blank by default — user opts in explicitly
+}
+
+
 async function updateTrainDataCount(which, path) {
   const el = document.getElementById(`train-${which}-count`);
   el.textContent = "…";
@@ -1514,10 +1580,12 @@ function drawTrainChart() {
 // ---- Stream ----
 
 async function startTraining() {
-  const selDir  = document.getElementById("train-select-dir").value.trim();
-  const rejDir  = document.getElementById("train-reject-dir").value.trim();
-  const name    = document.getElementById("train-model-name").value.trim();
-  const desc    = document.getElementById("train-model-desc").value.trim();
+  const selDir     = document.getElementById("train-select-dir").value.trim();
+  const rejDir     = document.getElementById("train-reject-dir").value.trim();
+  const name       = document.getElementById("train-model-name").value.trim();
+  const desc       = document.getElementById("train-model-desc").value.trim();
+  const acceptKw   = document.getElementById("train-accept-kw").value.trim();
+  const rejectKw   = document.getElementById("train-reject-kw").value.trim();
   const epochs  = parseInt(document.getElementById("train-epochs").value)   || 15;
   const lr      = parseFloat(document.getElementById("train-lr").value)      || 1e-4;
   const batch   = parseInt(document.getElementById("train-batch").value)     || 32;
@@ -1538,6 +1606,7 @@ async function startTraining() {
     const { job_id, model_output } = await apiPost("/api/train/start", {
       select_dir: selDir, reject_dir: rejDir,
       model_name: name, description: desc,
+      accept_keyword: acceptKw, reject_keyword: rejectKw,
       test_size: tsize, epochs, learning_rate: lr, batch_size: batch,
     });
     document.getElementById("train-done-path").textContent = model_output;
