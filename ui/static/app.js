@@ -66,27 +66,6 @@ function apiPost(path, body) {
   });
 }
 
-// ====== Theme ======
-(function () {
-  const THEMES = ["modern", "deco", "full-deco"];
-  const saved = localStorage.getItem("robo.theme") || "modern";
-  const active = THEMES.includes(saved) ? saved : "modern";
-  document.documentElement.setAttribute("data-theme", active);
-
-  function applyTheme(t) {
-    document.documentElement.setAttribute("data-theme", t);
-    localStorage.setItem("robo.theme", t);
-    document.querySelectorAll(".theme-opt").forEach(btn =>
-      btn.classList.toggle("checked", btn.dataset.themeVal === t)
-    );
-  }
-  applyTheme(active);
-
-  document.querySelectorAll(".theme-opt").forEach(btn =>
-    btn.addEventListener("click", () => applyTheme(btn.dataset.themeVal))
-  );
-})();
-
 // ====== Menubar ======
 (function () {
   const menubar = document.getElementById("menubar");
