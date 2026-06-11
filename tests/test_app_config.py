@@ -63,6 +63,13 @@ class TestParseToml:
         result = _parse_toml('key = "/Volumes/My Drive/models"')
         assert result == {"key": "/Volumes/My Drive/models"}
 
+    def test_value_with_double_quote_roundtrip(self):
+        # A path containing a literal " (e.g. /Volumes/archive "2024") must
+        # survive write→parse without being silently dropped or truncated.
+        # The writer escapes " as \" and the parser unescapes it back.
+        result = _parse_toml(r'key = "/Volumes/archive \"2024\""')
+        assert result == {"key": '/Volumes/archive "2024"'}
+
 
 # =============================================================================
 # AppConfig.get / set — round-trip persistence
@@ -102,6 +109,18 @@ class TestGetSet:
 
         cfg2 = AppConfig()
         assert cfg2.get("model_library") == "/second"
+
+    def test_set_value_with_double_quote_roundtrip(self, tmp_path, monkeypatch):
+        # A path containing a literal " must survive set() → file → reload.
+        # Previous bug: the writer emitted unescaped " which caused the parser
+        # to truncate or drop the value entirely.
+        config_path = tmp_path / "config.toml"
+        monkeypatch.setattr(app_config, "CONFIG_PATH", config_path)
+        cfg = AppConfig()
+        cfg.set("model_library", '/Volumes/archive "2024"/models')
+
+        cfg2 = AppConfig()
+        assert cfg2.get("model_library") == '/Volumes/archive "2024"/models'
 
 
 # =============================================================================

@@ -74,7 +74,9 @@ class TestWriteXmpSidecar:
         assert any("-Keywords+=select" in a for a in args)
         assert any("-Subject+=select" in a for a in args)
 
-    def test_hierarchical_subject_uses_robo_prefix(self, tmp_path, monkeypatch):
+    def test_hierarchical_subject_uses_ai_keywords_prefix(self, tmp_path, monkeypatch):
+        # 'select' is not robo_-prefixed so hierarchy is "AI keywords|select",
+        # matching classify._keyword_hierarchy().
         img = tmp_path / "frame.NEF"
         img.write_bytes(b"")
         captured = []
@@ -82,7 +84,19 @@ class TestWriteXmpSidecar:
                             lambda args, **kw: captured.append(args) or
                             MagicMock(returncode=0))
         inference_hotel.write_xmp_sidecar(img, "select", 0.95)
-        assert any("-HierarchicalSubject+=robo|select" in a for a in captured[0])
+        assert any("-HierarchicalSubject+=AI keywords|select" in a for a in captured[0])
+
+    def test_hierarchical_subject_robo_keyword_uses_nested_hierarchy(self, tmp_path, monkeypatch):
+        # robo_-prefixed keywords get "AI keywords|robo|robo_95" hierarchy,
+        # matching classify._keyword_hierarchy().
+        img = tmp_path / "frame.NEF"
+        img.write_bytes(b"")
+        captured = []
+        monkeypatch.setattr(inference_hotel.subprocess, "run",
+                            lambda args, **kw: captured.append(args) or
+                            MagicMock(returncode=0))
+        inference_hotel.write_xmp_sidecar(img, "robo_95", 0.95)
+        assert any("-HierarchicalSubject+=AI keywords|robo|robo_95" in a for a in captured[0])
 
     def test_exiftool_missing_returns_false(self, tmp_path, monkeypatch):
         img = tmp_path / "frame.NEF"

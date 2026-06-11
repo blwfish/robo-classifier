@@ -251,7 +251,7 @@ def get_capture_times(file_paths):
             chunk = paths_str[start:start + 500]
             result = subprocess.run(
                 ['exiftool', '-json', '-DateTimeOriginal', '-SubSecTimeOriginal',
-                 '-ExposureTime'] + chunk,
+                 '-ExposureTime', '-CreateDate', '-FileModifyDate'] + chunk,
                 capture_output=True,
                 text=True
             )
@@ -265,29 +265,40 @@ def get_capture_times(file_paths):
     for item in data:
         path = Path(item.get('SourceFile', ''))
 
-        # Parse timestamp
-        dt_str = item.get('DateTimeOriginal', '')
+        # Parse timestamp — fall back in order: DateTimeOriginal → CreateDate
+        # → FileModifyDate. FileModifyDate from exiftool includes a timezone
+        # offset ("2026:01:31 11:12:34+05:00") which we strip before parsing.
         subsec = item.get('SubSecTimeOriginal', '0')
-
-        if not dt_str:
-            continue
-
-        try:
-            # Parse "2026:01:31 11:12:34" format
-            dt = datetime.strptime(dt_str, '%Y:%m:%d %H:%M:%S')
-            # Add subseconds. SubSecTimeOriginal is normally digit-only ('500'
-            # meaning 0.500 s), but some cameras write it as a decimal ('0.5').
-            subsec_str = str(subsec) if subsec else ''
-            if subsec_str:
-                if '.' in subsec_str:
-                    # Already a decimal — use the fractional part only.
-                    subsec_float = float(subsec_str) % 1.0
+        timestamp = None
+        for field in ('DateTimeOriginal', 'CreateDate', 'FileModifyDate'):
+            dt_str = item.get(field, '')
+            if not dt_str:
+                continue
+            try:
+                # Strip timezone offset if present (e.g. "+05:00" or "-07:00")
+                dt_str_clean = re.sub(r'[+-]\d{2}:\d{2}$', '', str(dt_str)).strip()
+                dt = datetime.strptime(dt_str_clean, '%Y:%m:%d %H:%M:%S')
+                # Add subseconds only for DateTimeOriginal/CreateDate fields;
+                # FileModifyDate typically doesn't have a paired SubSec field.
+                if field in ('DateTimeOriginal', 'CreateDate'):
+                    subsec_str = str(subsec) if subsec else ''
+                    if subsec_str:
+                        if '.' in subsec_str:
+                            subsec_float = float(subsec_str) % 1.0
+                        else:
+                            subsec_float = float(f'0.{subsec_str}')
+                    else:
+                        subsec_float = 0.0
                 else:
-                    subsec_float = float(f'0.{subsec_str}')
-            else:
-                subsec_float = 0.0
-            timestamp = dt.timestamp() + subsec_float
-        except (ValueError, TypeError):
+                    subsec_float = 0.0
+                timestamp = dt.timestamp() + subsec_float
+                break
+            except (ValueError, TypeError):
+                continue
+
+        if timestamp is None:
+            print(f"WARNING: no usable timestamp for {path} "
+                  f"(DateTimeOriginal/CreateDate/FileModifyDate all missing or unparseable)")
             continue
 
         # Parse shutter speed (might be "1/1000" or "0.001" or similar)
@@ -657,10 +668,15 @@ def write_keywords(winners, bursts, nef_dir=None, clear=True, model_keywords=Non
         # Nothing qualifies — leave all existing keywords intact.
         return tier_counts, 0, 0, 0, 0
 
-    # Clear stale keywords only from bursts that will be re-tagged.
-    # Winners with no burst membership (orphans) don't trigger a clear.
-    if clear and qualifying_bursts:
+    # Clear stale keywords only from bursts that will be re-tagged, plus any
+    # orphan winners (winners whose path doesn't appear in any burst). Orphans
+    # receive new tier keywords but their old tags would never be cleared
+    # otherwise, leaving stale robo_9x tags from prior runs.
+    orphan_paths = {p for p in winner_kws if p not in
+                    {frame['path'] for bk in qualifying_bursts for frame in bursts[bk]}}
+    if clear and (qualifying_bursts or orphan_paths):
         to_clear = {frame['path'] for bk in qualifying_bursts for frame in bursts[bk]}
+        to_clear |= orphan_paths
         for path in to_clear:
             clear_robo_keywords(path, nef_dir, extra_keywords=extra_clear or None)
 
@@ -722,8 +738,8 @@ def resolve_model(args_model, args_profile):
             try:
                 meta = json.loads(sidecar.read_text())
                 print(f"Profile '{args_profile}': {meta.get('description', '(no description)')}")
-            except Exception:
-                pass
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+                print(f"WARNING: could not read profile description from {sidecar}: {e}")
         return pt
 
     return Path(args_model)
@@ -741,8 +757,8 @@ def load_model_keywords(model_path):
             meta = json.loads(sidecar.read_text())
             result["accept_keyword"] = meta.get("accept_keyword") or None
             result["reject_keyword"] = meta.get("reject_keyword") or None
-        except Exception:
-            pass
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+            print(f"WARNING: failed to load model keywords from {sidecar}: {e}")
     return result
 
 
@@ -927,13 +943,16 @@ def run_pipeline(
 
     # Write results CSV first (includes decode_failed rows) so failures are visible
     # even if we subsequently raise.
-    results_csv = output_dir / "results.csv"
+    results_csv = None
+    winners_csv = None
     if not dry_run and results:
+        results_csv = output_dir / "results.csv"
         print(f"\nWriting full results to {results_csv}")
         with open(results_csv, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=RESULTS_FIELDS, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(results)
+
 
     if not results:
         raise RuntimeError("No images could be processed.")
@@ -964,8 +983,8 @@ def run_pipeline(
     winners, bursts = burst_dedup(classified_results, capture_times, burst_threshold)
     print(f"Reduced {len(classified_results)} images to {len(winners)} burst winners")
 
-    winners_csv = output_dir / "winners.csv"
     if not dry_run and winners:
+        winners_csv = output_dir / "winners.csv"
         with open(winners_csv, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=WINNERS_FIELDS, extrasaction='ignore')
             writer.writeheader()
@@ -1027,8 +1046,8 @@ def run_pipeline(
             }
             if junk_summary else None
         ),
-        "results_csv": str(results_csv),
-        "winners_csv": str(winners_csv) if winners else None,
+        "results_csv": str(results_csv) if results_csv else None,
+        "winners_csv": str(winners_csv) if winners_csv else None,
     }
     progress_cb({"type": "done", "summary": summary})
     return summary

@@ -97,13 +97,14 @@ class AppConfig:
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         lines = ["# robo-classifier configuration\n"]
         for k, meta in _FIELDS.items():
-            v = self._data.get(k, "")
+            v = self._data.get(k, "").replace('"', '\\"')
             lines.append(f"# {meta['label']}\n")
             lines.append(f'{k} = "{v}"\n\n')
         # Preserve any extra keys not in _FIELDS
         for k, v in self._data.items():
             if k not in _FIELDS:
-                lines.append(f'{k} = "{v}"\n')
+                escaped = v.replace('"', '\\"')
+                lines.append(f'{k} = "{escaped}"\n')
         CONFIG_PATH.write_text("".join(lines))
 
 
@@ -117,9 +118,11 @@ def _parse_toml(text: str) -> dict[str, str]:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        m = re.match(r'^(\w+)\s*=\s*"(.*)"$', line)
+        # Allow escaped quotes (\") inside the value; use non-greedy match up
+        # to the final unescaped closing quote.
+        m = re.match(r'^(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"$', line)
         if m:
-            result[m.group(1)] = m.group(2)
+            result[m.group(1)] = m.group(2).replace('\\"', '"')
     return result
 
 

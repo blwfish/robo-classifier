@@ -217,7 +217,7 @@ def _read_exif_batch(paths: list[Path]) -> dict[str, dict]:
         print("WARNING: exiftool not found — all files will use fallback timestamp/alias")
         return {}
     except subprocess.TimeoutExpired:
-        print("WARNING: exiftool timed out reading EXIF — all files will use fallback timestamp/alias")
+        print(f"WARNING: exiftool timed out; {len(paths)} file(s) will use fallback names")
         return {}
     except json.JSONDecodeError as e:
         print(f"WARNING: exiftool returned unexpected output ({e}) — all files will use fallback timestamp/alias")
@@ -425,12 +425,23 @@ def ingest(
                     n += 1
 
             shutil.copy2(str(src_path), str(dest_path))
-            _record(
-                conn, file_hash, str(dest_path),
-                model_alias(model) if model else "Unknown",
-                src_path.name,
-                f["source_label"],
-            )
+            try:
+                _record(
+                    conn, file_hash, str(dest_path),
+                    model_alias(model) if model else "Unknown",
+                    src_path.name,
+                    f["source_label"],
+                )
+            except sqlite3.OperationalError as db_err:
+                errors += 1
+                print(f"WARNING: DB write failed for {src_path.name}: {db_err}")
+                emit({
+                    "type": "file_result",
+                    "filename": src_path.name,
+                    "status": "error",
+                    "reason": f"DB write failed: {db_err}",
+                })
+                continue
             copied += 1
             emit({
                 "type": "file_result",

@@ -70,6 +70,24 @@ class TestTierKeyword:
     def test_exact_boundaries(self, conf, expected):
         assert classify.get_tier_keyword(conf) == expected
 
+    @pytest.mark.parametrize("conf,expected", [
+        # Just below 0.91 → robo_90
+        (0.9099, "robo_90"),
+        # Just above 0.91 → robo_91
+        (0.9101, "robo_91"),
+        # Just below 0.95 → robo_94
+        (0.9499, "robo_94"),
+        # Just above 0.95 → robo_95
+        (0.9501, "robo_95"),
+        # Just below 0.98 → robo_97
+        (0.9799, "robo_97"),
+        # Just above 0.98 → robo_98
+        (0.9801, "robo_98"),
+    ])
+    def test_internal_boundary_just_below_and_above(self, conf, expected):
+        """Pin the < vs >= contract at three internal tier boundaries."""
+        assert classify.get_tier_keyword(conf) == expected
+
     def test_monotonic(self):
         # Higher confidence → same-or-higher-tier keyword
         prev_tier = -1
@@ -291,3 +309,41 @@ class TestBurstDedupByTime:
         winners, bursts = classify.burst_dedup([], capture_times={}, time_threshold=0.5)
         assert winners == []
         assert bursts == {}
+
+    # --- Fix 5: time_threshold=0 and time_threshold=None both mean "disabled" ---
+
+    def test_time_threshold_zero_routes_to_filename_mode(self):
+        """time_threshold=0 must NOT enter time-based grouping (0 is the disabled sentinel).
+        Filename-based grouping should be used instead."""
+        from pathlib import Path
+        results = [
+            _result("BLW0001.jpg", 0.9, path="/x/BLW0001.jpg"),
+            _result("BLW0002.jpg", 0.95, path="/x/BLW0002.jpg"),
+        ]
+        ct = {
+            Path("/x/BLW0001.jpg"): {"timestamp": 100.0, "shutter": 0.001},
+            Path("/x/BLW0002.jpg"): {"timestamp": 100.1, "shutter": 0.001},
+        }
+        winners, bursts = classify.burst_dedup(results, capture_times=ct, time_threshold=0)
+        # Filename-based: stems are the keys, NOT "burst_N" keys
+        assert "BLW0001" in bursts
+        assert "BLW0002" in bursts
+        assert not any(k.startswith("burst_") for k in bursts.keys())
+
+    def test_time_threshold_none_with_capture_times_routes_to_filename_mode(self):
+        """time_threshold=None with a populated capture_times dict must still use
+        filename-based grouping — None means 'disabled', not 'zero tolerance'."""
+        from pathlib import Path
+        results = [
+            _result("A.jpg", 0.9, path="/x/A.jpg"),
+            _result("B.jpg", 0.95, path="/x/B.jpg"),
+        ]
+        ct = {
+            Path("/x/A.jpg"): {"timestamp": 200.0, "shutter": 0.001},
+            Path("/x/B.jpg"): {"timestamp": 200.05, "shutter": 0.001},
+        }
+        winners, bursts = classify.burst_dedup(results, capture_times=ct, time_threshold=None)
+        # Must be filename-based
+        assert "A" in bursts
+        assert "B" in bursts
+        assert not any(k.startswith("burst_") for k in bursts.keys())

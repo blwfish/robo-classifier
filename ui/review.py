@@ -36,9 +36,13 @@ def get_roll_angle(source: Path) -> float:
         result = subprocess.run(
             ['exiftool', '-json', '-RollAngle', str(source)],
             capture_output=True, text=True,
+            timeout=10,
         )
         data = json.loads(result.stdout)
         roll = float(data[0].get('RollAngle', 0) or 0)
+    except subprocess.TimeoutExpired:
+        print(f"WARNING: exiftool timed out reading roll angle for {source}")
+        return 0.0
     except (json.JSONDecodeError, IndexError, ValueError, TypeError, FileNotFoundError):
         return 0.0
     if abs(abs(roll) - 90.0) < _PORTRAIT_THRESHOLD:

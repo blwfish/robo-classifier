@@ -24,6 +24,7 @@ import argparse
 import csv
 import os
 import shutil
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -190,9 +191,11 @@ def detect_junk(
         try:
             return np.asarray(Image.open(path).convert('RGB')), None
         except Exception as e:
+            print(f"WARNING: decode failed for {path}: {type(e).__name__}: {e}", file=sys.stderr)
             return None, type(e).__name__
 
     decode_workers = max(2, min(8, (os.cpu_count() or 4) // 2))
+    total_inference_ms: float = 0.0
 
     with ThreadPoolExecutor(max_workers=decode_workers) as ex:
         # Submit all decodes up front. The pool runs `decode_workers` at a
@@ -229,6 +232,11 @@ def detect_junk(
                 verbose=False,
                 imgsz=imgsz,
             )
+            # Accumulate YOLO inference time (ms) for end-of-run summary
+            if preds:
+                speed = getattr(preds[0], 'speed', None)
+                if speed and 'inference' in speed:
+                    total_inference_ms += speed['inference'] * len(preds)
             batch = valid_paths
 
             for path, pred in zip(batch, preds):
@@ -286,6 +294,10 @@ def detect_junk(
             if progress_cb is not None:
                 progress_cb(scanned, len(paths))
 
+    if total_inference_ms > 0:
+        avg_ms = total_inference_ms / max(1, len(paths))
+        print(f"  YOLO inference: {total_inference_ms:.0f} ms total, "
+              f"{avg_ms:.1f} ms/image ({len(paths)} images)")
     print()
     return results_out
 
@@ -401,14 +413,20 @@ def filter_directory(
     for r in results:
         r.path = scan_to_original.get(r.path, r.path)
 
-    kept = [r for r in results if not r.is_junk]
+    decode_failed = [r for r in results if r.reason == 'decode_failed']
+    kept = [r for r in results if not r.is_junk and r.reason != 'decode_failed']
     junked = [r for r in results if r.is_junk]
+
+    if decode_failed:
+        print(f"WARNING: {len(decode_failed)} frame(s) failed to decode and were skipped "
+              f"(not counted as junk or kept)")
 
     by_reason: dict[str, int] = {}
     for r in results:
         by_reason[r.reason] = by_reason.get(r.reason, 0) + 1
 
-    print(f"\nJunk filter: {len(junked)} / {len(results)} flagged as junk")
+    countable = len(results) - len(decode_failed)
+    print(f"\nJunk filter: {len(junked)} / {countable} flagged as junk")
     for reason, count in sorted(by_reason.items()):
         print(f"  {reason}: {count}")
 
@@ -427,16 +445,22 @@ def filter_directory(
                 writer = csv.writer(f)
                 writer.writerow([
                     'filename', 'path', 'is_junk', 'reason',
-                    'n_detections', 'n_usable', 'img_w', 'img_h', 'error_class',
+                    'n_detections', 'n_usable', 'detection_classes', 'max_conf',
+                    'img_w', 'img_h', 'error_class',
                 ])
                 for r in results:
+                    usable = r.usable_detections
+                    detection_classes = ','.join(d.cls for d in usable) if usable else ''
+                    max_conf = max((d.conf for d in usable), default='')
                     writer.writerow([
                         r.path.name,
                         str(r.path),
                         r.is_junk,
                         r.reason,
                         len(r.detections),
-                        len(r.usable_detections),
+                        len(usable),
+                        detection_classes,
+                        max_conf,
                         r.img_width,
                         r.img_height,
                         r.error_class,

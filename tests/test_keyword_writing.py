@@ -47,6 +47,23 @@ class TestWriteKeywords:
         assert errors == 0
         assert tiers["robo_95"] == 1
 
+    def test_winner_at_exactly_0_90_gets_robo_90(self):
+        """A winner at exactly 0.90 confidence must produce 'robo_90', not None
+        and not 'robo_91'. Pins the >= contract at the lowest tier boundary."""
+        winners = [_row("/x/a.jpg", 0.90)]
+        bursts  = {"b0": [_row("/x/a.jpg", 0.90)]}
+        writes = []
+        with patch.object(classify, "write_keyword_to_file",
+                          side_effect=lambda p, kw, nef_dir=None: writes.append((p, kw)) or True):
+            tiers, winner_written, select_written, _, errors = \
+                classify.write_keywords(winners, bursts)
+        assert ("/x/a.jpg", "robo_90") in writes
+        assert not any(kw == "robo_91" for _, kw in writes)
+        assert tiers["robo_90"] == 1
+        assert tiers["below_threshold"] == 0
+        assert winner_written == 1
+        assert errors == 0
+
     def test_winner_below_threshold_no_write(self):
         winners = [_row("/x/a.jpg", 0.85)]
         bursts  = {"b0": [_row("/x/a.jpg", 0.85)]}
@@ -211,6 +228,61 @@ class TestWriteKeywords:
             )
         assert "robo_pca_select" in cleared_extra
         assert "robo_pca_reject" in cleared_extra
+
+    def test_dry_run_tier_counts_match_write_keywords(self):
+        """The dry-run counting logic in run_pipeline must produce the same
+        tier_counts and qualifying_bursts count as write_keywords does.
+
+        We replicate the dry-run block inline (mirroring classify.py ~983-998)
+        and compare it to the actual write_keywords output with a no-op exiftool.
+        """
+        winners = [
+            _row("/x/a.jpg", 0.95),   # robo_95 — in burst A
+            _row("/x/b.jpg", 0.91),   # robo_91 — in burst B
+            _row("/x/c.jpg", 0.85),   # below threshold — in burst C
+        ]
+        bursts = {
+            "A": [_row("/x/a.jpg", 0.95), _row("/x/a_sib.jpg", 0.60)],
+            "B": [_row("/x/b.jpg", 0.91)],
+            "C": [_row("/x/c.jpg", 0.85)],
+        }
+
+        # --- dry-run counting block (copied from classify.py) ---
+        path_to_burst = {
+            frame['path']: burst_key
+            for burst_key, frames in bursts.items()
+            for frame in frames
+        }
+        dry_tier_counts = {f"robo_{i}": 0 for i in range(90, 100)}
+        dry_tier_counts["below_threshold"] = 0
+        dry_qualifying_bursts = set()
+        for w in winners:
+            kw = classify.get_tier_keyword(w['confidence_select'])
+            if kw:
+                dry_tier_counts[kw] += 1
+                bk = path_to_burst.get(w['path'])
+                if bk:
+                    dry_qualifying_bursts.add(bk)
+            else:
+                dry_tier_counts["below_threshold"] += 1
+        dry_select_count = sum(len(bursts[b]) for b in dry_qualifying_bursts)
+
+        # --- actual write_keywords with mocked exiftool (no writes) ---
+        with patch.object(classify, "write_keyword_to_file", return_value=True), \
+             patch.object(classify, "clear_robo_keywords", return_value=True):
+            real_tiers, _, real_select_written, _, _ = classify.write_keywords(
+                winners, bursts
+            )
+
+        # Both paths must agree on tier distribution
+        for key in dry_tier_counts:
+            assert dry_tier_counts[key] == real_tiers[key], (
+                f"Mismatch on {key}: dry={dry_tier_counts[key]} real={real_tiers[key]}"
+            )
+        # Both paths must agree on how many 'select' siblings would be tagged
+        assert dry_select_count == real_select_written, (
+            f"select_count mismatch: dry={dry_select_count} real={real_select_written}"
+        )
 
     def test_no_model_keywords_no_extra_clear(self):
         """Without model_keywords, extra_keywords passed to clear is None."""

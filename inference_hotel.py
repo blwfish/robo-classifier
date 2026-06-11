@@ -86,6 +86,13 @@ def extract_nef_preview(nef_path, temp_jpg=None):
         return None
 
 
+def _keyword_hierarchy(keyword):
+    """HierarchicalSubject value for a keyword — matches classify._keyword_hierarchy."""
+    if keyword.startswith('robo_'):
+        return f"AI keywords|robo|{keyword}"
+    return f"AI keywords|{keyword}"
+
+
 def write_xmp_sidecar(image_path, classification, confidence):
     """
     Write classification keyword to XMP sidecar via exiftool.
@@ -100,13 +107,14 @@ def write_xmp_sidecar(image_path, classification, confidence):
     import subprocess
     image_path = Path(image_path)
     xmp_path = image_path.with_suffix('.xmp')
+    hierarchy = _keyword_hierarchy(classification)
 
     if xmp_path.exists():
         cmd = [
             'exiftool', '-overwrite_original',
             f'-Keywords+={classification}',
             f'-Subject+={classification}',
-            f'-HierarchicalSubject+=robo|{classification}',
+            f'-HierarchicalSubject+={hierarchy}',
             str(xmp_path),
         ]
     else:
@@ -115,7 +123,7 @@ def write_xmp_sidecar(image_path, classification, confidence):
             '-tagsfromfile', str(image_path),
             f'-Keywords+={classification}',
             f'-Subject+={classification}',
-            f'-HierarchicalSubject+=robo|{classification}',
+            f'-HierarchicalSubject+={hierarchy}',
             '-o', str(xmp_path),
         ]
 
@@ -197,7 +205,8 @@ def process_directory(classifier, input_dir, output_csv=None, write_xmp=True,
                         'classification': pred_class,
                         'confidence': confidence,
                         'confidence_reject': probs[i, classifier.class_to_idx['reject']].item(),
-                        'confidence_select': probs[i, classifier.class_to_idx['select']].item()
+                        'confidence_select': probs[i, classifier.class_to_idx['select']].item(),
+                        'error_class': '',
                     }
                     results.append(result)
 
@@ -236,7 +245,8 @@ def process_directory(classifier, input_dir, output_csv=None, write_xmp=True,
                 'classification': pred_class,
                 'confidence': confidence,
                 'confidence_reject': predictions.get('reject', 0.0),
-                'confidence_select': predictions.get('select', 0.0)
+                'confidence_select': predictions.get('select', 0.0),
+                'error_class': '',
             }
             results.append(result)
 

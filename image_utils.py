@@ -84,7 +84,7 @@ class ExiftoolProcess:
             ['exiftool', '-stay_open', 'True', '-@', '-'],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            stderr=subprocess.DEVNULL  # PIPE would fill (~64KB) on large batches and deadlock
         )
         self._seq = 0
 
@@ -167,21 +167,28 @@ def _extract_one_rawpy(raw_path, temp_dir, max_edge=None):
             return raw_path, None
 
         data = thumb.data
-        if max_edge is not None:
-            from PIL import Image, ImageOps
-            import io
-            img = Image.open(io.BytesIO(data))
-            if max(img.size) > max_edge:
-                img = ImageOps.exif_transpose(img)
-                img.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
-                buf = io.BytesIO()
-                img.save(buf, "JPEG", quality=90, optimize=True)
-                data = buf.getvalue()
+        # Always apply exif_transpose and re-encode without the orientation tag.
+        # This normalises the preview to a canonical upright JPEG so downstream
+        # callers (get_thumb, _write_thumb_from_input) can safely call
+        # exif_transpose() as a no-op instead of double-rotating portrait shots.
+        from PIL import Image, ImageOps
+        import io
+        img = Image.open(io.BytesIO(data))
+        img = ImageOps.exif_transpose(img)  # rotate to upright
+        if max_edge is not None and max(img.size) > max_edge:
+            img.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        # Pillow's save() does not copy EXIF by default, so the orientation tag
+        # is dropped — the saved file is already "canonical".
+        img.save(buf, "JPEG", quality=90, optimize=True)
+        data = buf.getvalue()
 
         with open(preview_path, 'wb') as f:
             f.write(data)
         return raw_path, preview_path
-    except Exception:
+    except Exception as e:
+        import sys
+        print(f"WARNING: rawpy failed on {raw_path.name}: {type(e).__name__}: {e}", file=sys.stderr)
         return raw_path, None
 
 
