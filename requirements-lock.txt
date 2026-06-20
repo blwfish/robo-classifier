@@ -49,7 +49,7 @@ keyring==25.7.0
 -e git+https://github.com/blwfish/kicad-mcp.git@fbbd7eba052c07da35e900e9ee2368240129d615#egg=kicad_mcp
 kicad-sch-api==0.5.6
 license-expression==30.4.4
-lxml==6.0.2
+lxml==6.1.0
 markdown-it-py==4.0.0
 MarkupSafe==3.0.3
 marshmallow==3.26.2
