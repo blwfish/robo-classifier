@@ -9,11 +9,17 @@ Each cue block looks like:
     2026-06-29 10:27:07.249
     [iso: 210] [shutter: 1/5000.0] [fnum: 1.7] [ev: 0] [color_md : default] [focal_len: 24.00] [latitude: 41.620801] [longitude: -75.778972] [rel_alt: 36.400 abs_alt: 220.994] [ct: 5579] </font>
 
-Every field DJI writes into the bracket line is captured below (iso, shutter,
-fnum, ev, color_md, focal_len, latitude, longitude, rel_alt, abs_alt, ct) --
-none are silently dropped. There is exactly one regex for the bracket line
-(no alternation, no fallback pattern) so parsing can't silently diverge
-between cue blocks.
+Every field observed in Air3-produced SRT files is captured below (iso,
+shutter, fnum, ev, color_md, focal_len, latitude, longitude, rel_alt,
+abs_alt, ct) -- none are silently dropped. There is exactly one regex for
+the bracket line (no alternation, no fallback pattern) so parsing can't
+silently diverge between cue blocks. This enumeration is drawn from a
+single embedded sample block, not a corpus across firmware versions or
+DJI's other (unrelated) camera models -- it is not a claim about "the DJI
+SRT format" in general, some of which (e.g. zoom-lens models' digital
+zoom ratio, or flight-telemetry fields like home distance/satellite count
+on other DJI models) may carry fields this parser has never seen and
+would raise SrtParseError on rather than silently accepting.
 """
 
 from __future__ import annotations
@@ -77,6 +83,13 @@ class SrtCue:
     rel_alt: float | None
     abs_alt: float | None
     ct: int
+    raw_fields_text: str = ""  # the full bracket-fields source line,
+        # verbatim, alongside the typed fields above -- so if DJI ever
+        # inserts a field this parser doesn't know about (e.g. a
+        # zoom-lens model's dzoom_ratio) between two known fields and
+        # breaks FIELDS_RE, or firmware adds something new that FIELDS_RE
+        # happens to still match around, the complete original text is
+        # preserved rather than only the fields this parser recognizes.
 
     @property
     def has_gps(self) -> bool:
@@ -119,6 +132,15 @@ def parse_srt(srt_path) -> list[SrtCue]:
             # SrtParseError to turn any parse failure into a per-clip
             # warning instead of an uncaught crash.
             raise SrtParseError(srt_path, block, str(e)) from e
+        if cue_end_s < cue_start_s:
+            # An inverted cue (end before start) would otherwise parse
+            # cleanly and flow straight into merge.py's cumulative_offset
+            # arithmetic as a negative-duration cue, corrupting every
+            # subsequent cue's timestamp in the merged subtitle track.
+            raise SrtParseError(
+                srt_path, block,
+                f"cue end time ({end_tc.strip()}) is before start time ({start_tc.strip()})",
+            )
 
         header_m = HEADER_RE.search(lines[2])
         if not header_m:
@@ -154,6 +176,7 @@ def parse_srt(srt_path) -> list[SrtCue]:
                 rel_alt=float(fields_m.group("rel_alt")) if lat_raw is not None else None,
                 abs_alt=float(fields_m.group("abs_alt")) if lat_raw is not None else None,
                 ct=int(fields_m.group("ct")),
+                raw_fields_text=fields_text.strip(),
             )
         )
     return cues

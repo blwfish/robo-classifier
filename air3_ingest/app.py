@@ -4,7 +4,7 @@ FastAPI entrypoint for the Air3 ingest tool.
 Run with:
     python air3_ingest/app.py
 
-Serves the UI at http://localhost:8766/ by default.
+Serves the UI at http://localhost:8767/ by default.
 """
 
 from __future__ import annotations
@@ -33,13 +33,41 @@ DEFAULT_PREFS = {
 }
 
 
+def _prefs_value_ok(value, default) -> bool:
+    if isinstance(default, bool):
+        return isinstance(value, bool)
+    if isinstance(default, (int, float)):
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if isinstance(default, str):
+        return isinstance(value, str)
+    return type(value) is type(default)
+
+
 def load_prefs() -> dict:
-    if PREFS_PATH.exists():
-        try:
-            return {**DEFAULT_PREFS, **json.loads(PREFS_PATH.read_text())}
-        except (json.JSONDecodeError, OSError):
-            pass
-    return dict(DEFAULT_PREFS)
+    if not PREFS_PATH.exists():
+        return dict(DEFAULT_PREFS)
+    try:
+        raw = json.loads(PREFS_PATH.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"air3_ingest: {PREFS_PATH} is unreadable/corrupt ({e}); using defaults")
+        return dict(DEFAULT_PREFS)
+    if not isinstance(raw, dict):
+        print(f"air3_ingest: {PREFS_PATH} does not contain a JSON object "
+              f"(got {type(raw).__name__}); using defaults")
+        return dict(DEFAULT_PREFS)
+
+    prefs = dict(DEFAULT_PREFS)
+    for key, default in DEFAULT_PREFS.items():
+        if key not in raw:
+            continue
+        value = raw[key]
+        if _prefs_value_ok(value, default):
+            prefs[key] = value
+        else:
+            print(f"air3_ingest: {PREFS_PATH} key {key!r} has wrong type "
+                  f"({type(value).__name__}, expected {type(default).__name__}); "
+                  f"ignoring, using default")
+    return prefs
 
 
 def save_prefs(prefs: dict) -> None:
@@ -50,15 +78,38 @@ def _applescript_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def choose_folder_dialog(prompt: str, default_dir: str | None) -> str | None:
+def choose_folder_dialog(prompt: str, default_dir: str | None) -> tuple[str | None, str | None]:
+    """Returns (chosen_path, error).
+
+    Exactly one of these is meaningful at a time:
+      - success: (path, None)
+      - user cancelled the dialog: (None, None) -- not an error
+      - genuine failure (permission denial, malformed prompt, osascript
+        missing, unexpected output): (None, "diagnostic message")
+
+    A prior version conflated every non-zero osascript exit with "user
+    cancelled" and discarded stderr entirely, so a broken dialog looked
+    identical to normal user behavior.
+    """
     script = f'POSIX path of (choose folder with prompt "{_applescript_escape(prompt)}"'
     if default_dir and Path(default_dir).is_dir():
         script += f' default location (POSIX file "{_applescript_escape(default_dir)}")'
     script += ")"
-    result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+    try:
+        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+    except FileNotFoundError:
+        return None, "osascript is not available on this system"
+
     if result.returncode != 0:
-        return None  # user cancelled, or dialog failed
-    return result.stdout.strip()
+        stderr = result.stderr.strip()
+        if "-128" in stderr:  # AppleScript's "User canceled." error number
+            return None, None
+        return None, stderr or f"osascript exited {result.returncode} with no diagnostic output"
+
+    chosen = result.stdout.strip()
+    if not chosen.startswith("/"):
+        return None, f"osascript returned an unexpected (non-path) value: {chosen!r}"
+    return chosen, None
 
 
 class ChooseDirRequest(BaseModel):
@@ -74,12 +125,16 @@ class ProcessRequest(BaseModel):
     source_dir: str
     destination_dir: str
     gap_threshold_s: float = merge.GAP_THRESHOLD_DEFAULT_S
-    # Groups to process, identified by their exact clip filename list (as
-    # returned by /api/scan's group_summary "clip_names") rather than a
-    # positional index -- /api/process re-runs discovery from scratch, and if
-    # the source folder's contents changed since the scan (e.g. still
-    # copying off the SD card, or a file removed), positional indices could
-    # silently point at a different group than what the user selected.
+    # Groups to process, identified by their exact clip full-path list (as
+    # returned by /api/scan's group_summary "clip_paths") rather than a
+    # positional index or bare filename -- /api/process re-runs discovery
+    # from scratch, and if the source folder's contents changed since the
+    # scan (e.g. still copying off the SD card, or a file removed),
+    # positional indices could silently point at a different group than
+    # what the user selected. Full paths (not just names) matter because
+    # DJI cameras paginate onto multiple *MEDIA folders and can restart
+    # file numbering per folder, so two clips in different subfolders can
+    # share a filename.
     # None = process every discovered group.
     selected_groups: list[list[str]] | None = None
 
@@ -105,7 +160,9 @@ def choose_dir(req: ChooseDirRequest):
         if req.which == "source"
         else "Choose destination folder for merged videos"
     )
-    chosen = choose_folder_dialog(prompt, prefs.get(key))
+    chosen, error = choose_folder_dialog(prompt, prefs.get(key))
+    if error is not None:
+        raise HTTPException(502, f"folder picker failed: {error}")
     if chosen is None:
         return {"cancelled": True, "path": prefs.get(key)}
     prefs[key] = chosen
@@ -160,21 +217,21 @@ def process(req: ProcessRequest):
     dest_path = Path(req.destination_dir)
 
     groups, _summaries, discovery_warnings = _discover_and_group(req.source_dir, gap_threshold_s)
-    groups_by_names = {tuple(c.mp4_path.name for c in g.clips): g for g in groups}
+    groups_by_paths = {tuple(str(c.mp4_path) for c in g.clips): g for g in groups}
 
     if req.selected_groups is not None:
         # dict.fromkeys, not set(): de-dupes while preserving the order the
         # user selected groups in, so results come back in a stable order.
-        requested = list(dict.fromkeys(tuple(names) for names in req.selected_groups))
+        requested = list(dict.fromkeys(tuple(paths) for paths in req.selected_groups))
     else:
-        requested = list(groups_by_names.keys())
+        requested = list(groups_by_paths.keys())
 
     results = []
-    for names in requested:
-        group = groups_by_names.get(names)
+    for paths in requested:
+        group = groups_by_paths.get(paths)
         if group is None:
             results.append({
-                "source_files": list(names),
+                "source_files": [Path(p).name for p in paths],
                 "ok": False,
                 "error": "this exact set of clips is no longer one discovered group -- "
                          "the source folder likely changed since the last scan; re-scan and retry",
@@ -183,7 +240,7 @@ def process(req: ProcessRequest):
         try:
             r = merge.merge_group(group, dest_path)
         except Exception as e:
-            results.append({"source_files": list(names), "ok": False, "error": str(e)})
+            results.append({"source_files": [Path(p).name for p in paths], "ok": False, "error": str(e)})
             continue
         results.append({
             "ok": r.ok,
@@ -192,7 +249,11 @@ def process(req: ProcessRequest):
             "error": r.error,
             "warnings": r.warnings,
         })
-    return {"results": results, "discovery_warnings": discovery_warnings}
+    return {
+        "results": results,
+        "discovery_warnings": discovery_warnings,
+        "failed_count": sum(1 for r in results if not r["ok"]),
+    }
 
 
 if __name__ == "__main__":

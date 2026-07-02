@@ -141,6 +141,15 @@ class TestMalformedBlocks:
         with pytest.raises(SrtParseError):
             parse_srt(write_srt(tmp_path, text))
 
+    def test_inverted_timecode_raises(self, tmp_path):
+        # Regression: an end time before the start time used to parse
+        # cleanly into a negative-duration cue, which then flowed straight
+        # into merge.py's cumulative_offset arithmetic and corrupted every
+        # subsequent cue's timestamp in the merged subtitle track.
+        text = cue_block(start_tc="00:00:05,000", end_tc="00:00:00,000")
+        with pytest.raises(SrtParseError):
+            parse_srt(write_srt(tmp_path, text))
+
     def test_missing_framecnt_header_raises(self, tmp_path):
         text = cue_block().replace("FrameCnt: 1, DiffTime: 33ms", "garbage header")
         with pytest.raises(SrtParseError):

@@ -155,7 +155,7 @@ $('scan_btn').onclick = async () => {
 $('process_btn').onclick = async () => {
   const selected = Array.from(document.querySelectorAll('.grp_cb'))
     .filter(cb => cb.checked)
-    .map(cb => lastGroups[parseInt(cb.dataset.idx)].clip_names);
+    .map(cb => lastGroups[parseInt(cb.dataset.idx)].clip_paths);
   if (!selected.length) { $('status').textContent = 'No groups selected.'; return; }
   $('status').textContent = `Processing ${selected.length} group(s)…`;
   $('process_btn').disabled = true;

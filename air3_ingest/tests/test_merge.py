@@ -23,7 +23,9 @@ BASE = datetime(2026, 6, 29, 10, 0, 0)
 def make_probe(**overrides):
     fields = dict(
         duration_s=60.0, codec_name="hevc", width=3840, height=2160,
-        r_frame_rate="60000/1001", creation_time="2026-06-29T14:00:00.000000Z",
+        r_frame_rate="60000/1001", pix_fmt="yuv420p10le", rotation=0,
+        bit_rate=None, nb_frames=None, container_location=None,
+        creation_time="2026-06-29T14:00:00.000000Z",
     )
     fields.update(overrides)
     return merge.ClipProbe(**fields)
@@ -165,6 +167,26 @@ class TestCheckUniformStream:
         b = make_clip("/fake/b.mp4", BASE, BASE, probe=make_probe(codec_name="h264"))
         assert merge._check_uniform_stream([a, b]) is not None
 
+    def test_mismatched_frame_rate_returns_message(self):
+        # Regression: r_frame_rate used to be in the comparison tuple in
+        # name only -- every make_probe() call shared the same hardcoded
+        # value, so a frame-rate-only mismatch was never actually
+        # exercised. -c:v copy concat across differing frame rates
+        # silently corrupts the output.
+        a = make_clip("/fake/a.mp4", BASE, BASE, probe=make_probe(r_frame_rate="60000/1001"))
+        b = make_clip("/fake/b.mp4", BASE, BASE, probe=make_probe(r_frame_rate="30000/1001"))
+        assert merge._check_uniform_stream([a, b]) is not None
+
+    def test_mismatched_pix_fmt_returns_message(self):
+        a = make_clip("/fake/a.mp4", BASE, BASE, probe=make_probe(pix_fmt="yuv420p"))
+        b = make_clip("/fake/b.mp4", BASE, BASE, probe=make_probe(pix_fmt="yuv420p10le"))
+        assert merge._check_uniform_stream([a, b]) is not None
+
+    def test_mismatched_rotation_returns_message(self):
+        a = make_clip("/fake/a.mp4", BASE, BASE, probe=make_probe(rotation=0))
+        b = make_clip("/fake/b.mp4", BASE, BASE, probe=make_probe(rotation=90))
+        assert merge._check_uniform_stream([a, b]) is not None
+
 
 class TestGpsCueLookup:
     def test_first_gps_cue_skips_clip_with_no_cues(self):
@@ -229,3 +251,112 @@ class TestGroupSummary:
         summary = merge.group_summary(merge.ClipGroup(clips=[a, b]))
         assert summary["total_size_bytes"] == 300
         assert summary["total_duration_s"] == 30.0
+
+    def test_clip_paths_are_full_paths_not_just_names(self, tmp_path):
+        # Regression: group identity used to be name-only (clip_names),
+        # which collapses same-named clips from different *MEDIA
+        # subfolders. clip_paths is the field the frontend now uses for
+        # the scan->select->process round trip.
+        nested = tmp_path / "100MEDIA"
+        nested.mkdir()
+        clip = make_clip(self._real_file(nested, "DJI_0001.MP4"), BASE, BASE + timedelta(seconds=10))
+        summary = merge.group_summary(merge.ClipGroup(clips=[clip]))
+        assert summary["clip_names"] == ["DJI_0001.MP4"]
+        assert summary["clip_paths"] == [str(nested / "DJI_0001.MP4")]
+
+
+class TestStreamRotation:
+    def test_no_rotation_info_returns_zero(self):
+        assert merge._stream_rotation({}) == 0
+
+    def test_side_data_rotation_used(self):
+        stream = {"side_data_list": [{"side_data_type": "Display Matrix", "rotation": -90}]}
+        assert merge._stream_rotation(stream) == -90
+
+    def test_legacy_rotate_tag_used_as_fallback(self):
+        stream = {"tags": {"rotate": "180"}}
+        assert merge._stream_rotation(stream) == 180
+
+    def test_side_data_takes_precedence_over_legacy_tag(self):
+        stream = {
+            "side_data_list": [{"side_data_type": "Display Matrix", "rotation": 90}],
+            "tags": {"rotate": "270"},
+        }
+        assert merge._stream_rotation(stream) == 90
+
+
+class TestFilenameStart:
+    def test_extracts_timestamp_and_suffix(self):
+        start_dt, suffix = merge._filename_start(Path("DJI_20260629142707_0001_D.MP4"))
+        assert start_dt == datetime(2026, 6, 29, 14, 27, 7)
+        assert suffix == "0001_D"
+
+    def test_suffix_empty_when_nothing_follows_timestamp(self):
+        _start_dt, suffix = merge._filename_start(Path("DJI_20260629142707_.MP4"))
+        assert suffix == ""
+
+    def test_non_dji_filename_raises(self):
+        with pytest.raises(ValueError):
+            merge._filename_start(Path("IMG_1234.MP4"))
+
+    def test_missing_trailing_underscore_raises(self):
+        # No trailing "_" immediately after the timestamp digits -- must
+        # not silently misparse or fall through; a bad filename here used
+        # to abort discovery of the entire source directory (now isolated
+        # per-item in discover_clips, but _filename_start itself must
+        # still fail loud).
+        with pytest.raises(ValueError):
+            merge._filename_start(Path("DJI_20260629142707.MP4"))
+
+    def test_calendrically_invalid_date_raises(self):
+        with pytest.raises(ValueError):
+            merge._filename_start(Path("DJI_20261332999999_0001.MP4"))
+
+
+class TestBuildMergedTelemetry:
+    """Pins the has_telemetry/cumulative_offset logic extracted from
+    merge_group -- previously only reachable through the full ffmpeg
+    subprocess pipeline, so the silent-gap bug it contains had zero test
+    coverage."""
+
+    def test_no_clips_have_cues_returns_none_and_no_warnings(self):
+        a = make_clip("/fake/a.mp4", BASE, BASE, cues=[], probe=make_probe(duration_s=10.0))
+        b = make_clip("/fake/b.mp4", BASE, BASE, cues=[], probe=make_probe(duration_s=10.0))
+        text, warnings = merge._build_merged_telemetry([a, b])
+        assert text is None
+        assert warnings == []
+
+    def test_all_clips_have_cues_no_gap_warnings(self):
+        a = make_clip("/fake/a.mp4", BASE, BASE, cues=[make_cue(BASE)], probe=make_probe(duration_s=10.0))
+        b = make_clip("/fake/b.mp4", BASE, BASE, cues=[make_cue(BASE)], probe=make_probe(duration_s=10.0))
+        text, warnings = merge._build_merged_telemetry([a, b])
+        assert text is not None
+        assert warnings == []
+
+    def test_cueless_clip_mid_group_produces_gap_warning(self):
+        # Regression for the silent-gap bug: has_telemetry used to be a
+        # group-wide OR with no signal that a cueless clip mid-group
+        # leaves a real hole in the merged subtitle track.
+        a = make_clip("/fake/a.mp4", BASE, BASE, cues=[make_cue(BASE)], probe=make_probe(duration_s=10.0))
+        b = make_clip("/fake/b.mp4", BASE, BASE, cues=[], probe=make_probe(duration_s=25.0))
+        c = make_clip("/fake/c.mp4", BASE, BASE, cues=[make_cue(BASE)], probe=make_probe(duration_s=10.0))
+        text, warnings = merge._build_merged_telemetry([a, b, c])
+        assert text is not None
+        assert len(warnings) == 1
+        assert "b.mp4" in warnings[0]
+        assert "25.0s gap" in warnings[0]
+
+    def test_cumulative_offset_advances_through_cueless_clip(self):
+        # The cueless clip's duration must still be added to
+        # cumulative_offset so a later clip's cues land at the right point
+        # in the merged timeline instead of overlapping an earlier cue.
+        a = make_clip("/fake/a.mp4", BASE, BASE,
+                       cues=[make_cue(BASE, cue_start_s=0.0, cue_end_s=1.0)],
+                       probe=make_probe(duration_s=10.0))
+        b = make_clip("/fake/b.mp4", BASE, BASE, cues=[], probe=make_probe(duration_s=25.0))
+        c = make_clip("/fake/c.mp4", BASE, BASE,
+                       cues=[make_cue(BASE, cue_start_s=0.0, cue_end_s=1.0)],
+                       probe=make_probe(duration_s=10.0))
+        text, _warnings = merge._build_merged_telemetry([a, b, c])
+        # clip c's cue starts at cumulative_offset = 10.0 (a) + 25.0 (b) = 35.0s
+        assert "00:00:35,000 --> 00:00:36,000" in text
