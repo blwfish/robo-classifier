@@ -6,7 +6,7 @@ Run with:
     python ui/app.py
     uvicorn ui.app:app --reload
 
-Serves the SPA at http://localhost:8765/ by default.
+Serves the SPA at http://localhost:8768/ by default.
 """
 
 from __future__ import annotations
@@ -862,7 +862,7 @@ def library_delete(name: str):
 # Entrypoint
 # -----------------------------------------------------------------------------
 
-def serve(host: str = "127.0.0.1", port: int = 8765, reload: bool = False):
+def serve(host: str = "127.0.0.1", port: int = 8768, reload: bool = False):
     import uvicorn
     uvicorn.run("ui.app:app", host=host, port=port, reload=reload)
 
@@ -871,7 +871,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=8768)
     parser.add_argument("--reload", action="store_true")
     args = parser.parse_args()
     serve(args.host, args.port, args.reload)

@@ -22,7 +22,7 @@
 - [x] **Junk filter**: YOLOv8-based pre-pass detects frames with no vehicle
       or only edge-clipped vehicles, moves them into `junk/`. Tunable edge-area
       rule (default 0.05) — user explicitly wanted aggressive filtering.
-- [x] **FastAPI review UI** at `localhost:8765`:
+- [x] **FastAPI review UI** at `localhost:8768`:
   - Folder browser (`/api/ls`, persists last-used dir)
   - Pipeline runner with SSE progress + per-stage timestamps + live elapsed counter
   - Threshold tuner screen: histogram, dual sliders, tier chips, filtered thumb grid,
