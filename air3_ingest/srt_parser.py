@@ -109,8 +109,16 @@ def parse_srt(srt_path) -> list[SrtCue]:
         if "-->" not in lines[1]:
             raise SrtParseError(srt_path, block, "missing '-->' timecode line")
         start_tc, end_tc = lines[1].split("-->")
-        cue_start_s = _parse_timecode(start_tc)
-        cue_end_s = _parse_timecode(end_tc)
+        try:
+            cue_start_s = _parse_timecode(start_tc)
+            cue_end_s = _parse_timecode(end_tc)
+        except ValueError as e:
+            # Re-raise as SrtParseError (not a bare ValueError) so every
+            # malformed-input path in this function shares one exception
+            # type -- callers (discover_clips) only need to catch
+            # SrtParseError to turn any parse failure into a per-clip
+            # warning instead of an uncaught crash.
+            raise SrtParseError(srt_path, block, str(e)) from e
 
         header_m = HEADER_RE.search(lines[2])
         if not header_m:
