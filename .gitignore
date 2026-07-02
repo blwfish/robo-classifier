@@ -21,3 +21,7 @@ model.pt
 CLAUDE.md
 .claude/
 .claude.json
+
+# air3_ingest local state
+air3_ingest/.prefs.json
+air3_ingest/__pycache__/

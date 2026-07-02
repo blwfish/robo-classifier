@@ -1,0 +1,193 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Air3 Ingest</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 980px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  h1 { font-size: 1.3rem; }
+  fieldset { margin-bottom: 1rem; border: 1px solid #ccc; border-radius: 6px; }
+  .row { display: flex; gap: 0.5rem; align-items: center; margin: 0.5rem 0; }
+  .row label { width: 140px; flex-shrink: 0; }
+  .row input[type=text], .row input[type=number] { flex: 1; padding: 0.3rem; }
+  button { padding: 0.4rem 0.9rem; cursor: pointer; }
+  table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+  th, td { border-bottom: 1px solid #ddd; padding: 0.4rem 0.5rem; text-align: left; font-size: 0.9rem; vertical-align: top; }
+  th { background: #f5f5f5; }
+  .warn { color: #a05a00; }
+  .err { color: #b00020; }
+  .ok { color: #157a15; }
+  .gap { color: #666; font-size: 0.85rem; }
+  #status { margin-top: 1rem; white-space: pre-wrap; font-family: monospace; font-size: 0.85rem; }
+  .muted { color: #888; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+  <h1>Air3 Ingest</h1>
+  <p class="muted">Merges chunked/split Air3 recordings into single video files with embedded flight telemetry (GPS, altitude, camera settings) as a subtitle track. Source files are never modified.</p>
+
+  <fieldset>
+    <legend>Locations</legend>
+    <div class="row">
+      <label for="source_dir">Source folder</label>
+      <input type="text" id="source_dir">
+      <button id="choose_source">Choose…</button>
+    </div>
+    <div class="row">
+      <label for="dest_dir">Destination folder</label>
+      <input type="text" id="dest_dir">
+      <button id="choose_dest">Choose…</button>
+    </div>
+    <div class="row">
+      <label for="gap_minutes">Same-session gap</label>
+      <input type="number" id="gap_minutes" min="0" step="0.5" style="max-width:80px">
+      <span class="muted">minutes — gaps shorter than this are treated as one recording session (e.g. a stills break mid-flight)</span>
+    </div>
+  </fieldset>
+
+  <button id="scan_btn">Scan</button>
+  <button id="process_btn" disabled>Process Selected</button>
+
+  <div id="results"></div>
+  <div id="status"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let lastGroups = [];
+
+function fmtDuration(s) {
+  s = Math.round(s);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h ? `${h}h ${m}m ${sec}s` : (m ? `${m}m ${sec}s` : `${sec}s`);
+}
+function fmtSize(bytes) {
+  const gb = bytes / (1024 ** 3);
+  return gb >= 1 ? `${gb.toFixed(2)} GB` : `${(bytes / (1024 ** 2)).toFixed(0)} MB`;
+}
+function fmtGap(s) {
+  if (s == null) return '';
+  if (s < 0) return `overlap ${fmtDuration(-s)}`;
+  return fmtDuration(s);
+}
+function haversineMiles(a, b) {
+  if (!a || !b) return null;
+  const [lat1, lon1] = a, [lat2, lon2] = b;
+  const R = 3958.8, toRad = (d) => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const h = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function fmtLoc(loc) {
+  if (!loc) return '(no GPS)';
+  return `${loc[0].toFixed(4)}, ${loc[1].toFixed(4)}`;
+}
+
+async function loadPrefs() {
+  const p = await (await fetch('/api/prefs')).json();
+  $('source_dir').value = p.source_dir;
+  $('dest_dir').value = p.destination_dir;
+  $('gap_minutes').value = (p.gap_threshold_s / 60).toString();
+}
+
+$('choose_source').onclick = async () => {
+  const r = await (await fetch('/api/choose_dir', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({which:'source'})})).json();
+  if (!r.cancelled) $('source_dir').value = r.path;
+};
+$('choose_dest').onclick = async () => {
+  const r = await (await fetch('/api/choose_dir', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({which:'destination'})})).json();
+  if (!r.cancelled) $('dest_dir').value = r.path;
+};
+
+function renderGroups(data) {
+  lastGroups = data.groups;
+  let html = '';
+  if (data.warnings && data.warnings.length) {
+    html += `<div class="warn"><b>Discovery warnings:</b><ul>${data.warnings.map(w => `<li>${w}</li>`).join('')}</ul></div>`;
+  }
+  if (!data.groups.length) {
+    html += '<p class="muted">No MP4 clips found.</p>';
+  } else {
+    html += '<table><tr><th></th><th>#</th><th>Clips</th><th>Start</th><th>Duration</th><th>Size</th><th>Start loc</th><th>End loc</th><th>Notes</th></tr>';
+    data.groups.forEach((g, i) => {
+      const notes = [];
+      if (g.start_is_estimated) notes.push('start time estimated from filename (no SRT)');
+      if (g.missing_srt.length) notes.push(`missing SRT: ${g.missing_srt.join(', ')}`);
+      html += `<tr>
+        <td><input type="checkbox" class="grp_cb" data-idx="${i}" checked></td>
+        <td>${i + 1}</td>
+        <td>${g.clip_count}<br><span class="muted">${g.clip_names.join('<br>')}</span></td>
+        <td>${g.start_dt.replace('T', ' ')}</td>
+        <td>${fmtDuration(g.total_duration_s)}</td>
+        <td>${fmtSize(g.total_size_bytes)}</td>
+        <td>${fmtLoc(g.start_location)}</td>
+        <td>${fmtLoc(g.end_location)}</td>
+        <td class="warn">${notes.join('<br>')}</td>
+      </tr>`;
+      if (g.gap_to_next_s != null) {
+        const dist = haversineMiles(g.end_location, data.groups[i + 1].start_location);
+        const distStr = dist != null ? `${dist.toFixed(1)} mi` : '';
+        html += `<tr><td colspan="9" class="gap">— gap to next: ${fmtGap(g.gap_to_next_s)} ${distStr ? '· ' + distStr : ''} —</td></tr>`;
+      }
+    });
+    html += '</table>';
+  }
+  $('results').innerHTML = html;
+  $('process_btn').disabled = !data.groups.length;
+}
+
+$('scan_btn').onclick = async () => {
+  $('status').textContent = 'Scanning…';
+  $('results').innerHTML = '';
+  try {
+    const body = {
+      source_dir: $('source_dir').value,
+      gap_threshold_s: parseFloat($('gap_minutes').value) * 60,
+    };
+    const resp = await fetch('/api/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    if (!resp.ok) throw new Error((await resp.json()).detail || resp.statusText);
+    renderGroups(await resp.json());
+    $('status').textContent = '';
+  } catch (e) {
+    $('status').textContent = 'Scan failed: ' + e.message;
+  }
+};
+
+$('process_btn').onclick = async () => {
+  const selected = Array.from(document.querySelectorAll('.grp_cb'))
+    .filter(cb => cb.checked)
+    .map(cb => lastGroups[parseInt(cb.dataset.idx)].clip_names);
+  if (!selected.length) { $('status').textContent = 'No groups selected.'; return; }
+  $('status').textContent = `Processing ${selected.length} group(s)…`;
+  $('process_btn').disabled = true;
+  try {
+    const body = {
+      source_dir: $('source_dir').value,
+      destination_dir: $('dest_dir').value,
+      gap_threshold_s: parseFloat($('gap_minutes').value) * 60,
+      selected_groups: selected,
+    };
+    const resp = await fetch('/api/process', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    if (!resp.ok) throw new Error((await resp.json()).detail || resp.statusText);
+    const data = await resp.json();
+    let out = '';
+    data.results.forEach(r => {
+      const label = r.source_files[0] + (r.source_files.length > 1 ? ` +${r.source_files.length - 1} more` : '');
+      if (r.ok) {
+        out += `[OK] ${label} -> ${r.output_path}\n`;
+        if (r.warnings.length) out += r.warnings.map(w => `    warning: ${w}`).join('\n') + '\n';
+      } else {
+        out += `[FAIL] ${label}: ${r.error}\n`;
+      }
+    });
+    $('status').textContent = out;
+  } catch (e) {
+    $('status').textContent = 'Processing failed: ' + e.message;
+  } finally {
+    $('process_btn').disabled = false;
+  }
+};
+
+loadPrefs();
+</script>
+</body>
+</html>
