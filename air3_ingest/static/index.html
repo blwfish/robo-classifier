@@ -24,7 +24,7 @@
 </head>
 <body>
   <h1>Air3 Ingest</h1>
-  <p class="muted">Merges chunked/split Air3 recordings into single video files with embedded flight telemetry (GPS, altitude, camera settings) as a subtitle track. Source files are never modified.</p>
+  <p class="muted">Merges chunked/split recordings into single files with embedded telemetry/provenance -- Air3 drone video (GPS, altitude, camera settings as a subtitle track) or audio recorders (Zoom F3, Sound Devices MixPre-6, Zoom H3-VR; scene/take/note stamped into the merged file's BWF/iXML metadata). Source files are never modified. Point at a folder and Scan -- video vs. audio is detected automatically.</p>
 
   <fieldset>
     <legend>Locations</legend>
@@ -100,12 +100,28 @@ $('choose_dest').onclick = async () => {
 
 function renderGroups(data) {
   lastGroups = data.groups;
+  const isAudio = data.kind === 'audio';
   let html = '';
   if (data.warnings && data.warnings.length) {
     html += `<div class="warn"><b>Discovery warnings:</b><ul>${data.warnings.map(w => `<li>${w}</li>`).join('')}</ul></div>`;
   }
   if (!data.groups.length) {
-    html += '<p class="muted">No MP4 clips found.</p>';
+    html += `<p class="muted">No ${data.kind === 'empty' || !data.kind ? 'supported' : data.kind} clips found.</p>`;
+  } else if (isAudio) {
+    html += '<table><tr><th></th><th>#</th><th>Device</th><th>Clips</th><th>Start</th><th>Duration</th><th>Size</th><th>Scene / Note</th></tr>';
+    data.groups.forEach((g, i) => {
+      html += `<tr>
+        <td><input type="checkbox" class="grp_cb" data-idx="${i}" checked></td>
+        <td>${i + 1}</td>
+        <td>${g.device || ''}</td>
+        <td>${g.clip_count}<br><span class="muted">${g.clip_names.join('<br>')}</span></td>
+        <td>${g.start_dt.replace('T', ' ')}</td>
+        <td>${fmtDuration(g.total_duration_s)}</td>
+        <td>${fmtSize(g.total_size_bytes)}</td>
+        <td>${[g.scene, g.note].filter(Boolean).join(' / ')}</td>
+      </tr>`;
+    });
+    html += '</table>';
   } else {
     html += '<table><tr><th></th><th>#</th><th>Clips</th><th>Start</th><th>Duration</th><th>Size</th><th>Start loc</th><th>End loc</th><th>Notes</th></tr>';
     data.groups.forEach((g, i) => {

@@ -17,16 +17,23 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import procs
 from srt_parser import SrtCue, SrtParseError, format_cue_block, parse_srt
 
 FFPROBE = "ffprobe"
 FFMPEG = "ffmpeg"
+
+# Thin aliases: these used to be private to this module; now shared with
+# audio_merge.py via procs.py. Kept under their original names since
+# existing tests and call sites below reference them as `_run`/etc.
+_run = procs.run
+_quote_concat_path = procs.quote_concat_path
+_next_available_path = procs.next_available_path
 
 GAP_THRESHOLD_DEFAULT_S = 300.0
 
@@ -105,26 +112,6 @@ class MergeResult:
     source_files: list[str]
     error: str | None = None
     warnings: list[str] = field(default_factory=list)
-
-
-def _run(cmd: list[str], warnings: list[str] | None = None) -> str:
-    # errors="replace" (not the subprocess default "strict"): ffmpeg/ffprobe
-    # stderr is diagnostic text we only ever log, never parse, so a stray
-    # non-UTF-8 byte should degrade gracefully rather than raising
-    # UnicodeDecodeError -- which is not a RuntimeError and would bypass the
-    # `except RuntimeError` callers use to turn a failed run into a clean,
-    # per-clip/per-group error instead of an unhandled crash.
-    result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
-    if result.returncode != 0:
-        raise RuntimeError(f"command failed: {' '.join(cmd)}\n{result.stderr.strip()}")
-    stderr = result.stderr.strip()
-    if stderr and warnings is not None:
-        # Non-fatal warnings on stderr even on a zero exit (e.g. timestamp
-        # discontinuities) used to be silently discarded on the success
-        # path; surface them to the caller instead of only ever logging
-        # stderr on failure.
-        warnings.append(f"{cmd[0]} warning: {stderr}")
-    return result.stdout
 
 
 def _required_stream_field(stream: dict, key: str, mp4_path: Path):
@@ -348,21 +335,6 @@ def _check_uniform_stream(clips: list[Clip]) -> str | None:
 
 def _iso6709(lat: float, lon: float, alt: float) -> str:
     return f"{lat:+.4f}{lon:+.4f}{alt:+.3f}/"
-
-
-def _quote_concat_path(p: Path) -> str:
-    return "file '" + str(p.resolve()).replace("'", "'\\''") + "'"
-
-
-def _next_available_path(path: Path) -> Path:
-    if not path.exists():
-        return path
-    i = 2
-    while True:
-        candidate = path.with_name(f"{path.stem}_v{i}{path.suffix}")
-        if not candidate.exists():
-            return candidate
-        i += 1
 
 
 def _build_merged_telemetry(clips: list[Clip]) -> tuple[str | None, list[str]]:

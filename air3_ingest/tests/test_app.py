@@ -18,6 +18,7 @@ from fastapi import HTTPException
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import app
+import audio_merge
 import merge
 
 
@@ -29,6 +30,10 @@ def isolated_prefs(tmp_path, monkeypatch):
 
 def fake_group(names):
     return merge.ClipGroup(clips=[SimpleNamespace(mp4_path=Path(n)) for n in names])
+
+
+def fake_audio_group(names):
+    return audio_merge.AudioClipGroup(clips=[SimpleNamespace(wav_path=Path(n)) for n in names])
 
 
 class TestGapThresholdValidation:
@@ -50,9 +55,9 @@ class TestGapThresholdValidation:
         assert exc_info.value.status_code == 400
 
     def test_scan_accepts_small_positive_value(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(app, "_discover_and_group", lambda *a, **k: ([], [], []))
+        monkeypatch.setattr(app, "_discover_and_group", lambda *a, **k: ("video", [], [], [], {}))
         result = app.scan(app.ScanRequest(source_dir=str(tmp_path), gap_threshold_s=0.001))
-        assert result == {"groups": [], "warnings": []}
+        assert result == {"kind": "video", "groups": [], "warnings": []}
 
 
 class TestSourceDestValidation:
@@ -218,7 +223,7 @@ class TestChooseDirEndpoint:
 class TestProcessGroupSelection:
     def test_default_processes_every_discovered_group(self, tmp_path, monkeypatch):
         groups = [fake_group(["a.mp4"]), fake_group(["b.mp4", "c.mp4"])]
-        monkeypatch.setattr(app, "_discover_and_group", lambda *a, **k: (groups, [], []))
+        monkeypatch.setattr(app, "_discover_and_group", lambda *a, **k: ("video", groups, [], [], {}))
         calls = []
         monkeypatch.setattr(merge, "merge_group", lambda g, d: calls.append(g) or merge.MergeResult(
             ok=True, output_path=Path("/fake/out.mp4"), source_files=[c.mp4_path.name for c in g.clips],
@@ -232,7 +237,7 @@ class TestProcessGroupSelection:
 
     def test_duplicate_selected_groups_processed_only_once(self, tmp_path, monkeypatch):
         group = fake_group(["a.mp4", "b.mp4"])
-        monkeypatch.setattr(app, "_discover_and_group", lambda *a, **k: ([group], [], []))
+        monkeypatch.setattr(app, "_discover_and_group", lambda *a, **k: ("video", [group], [], [], {}))
         calls = []
         monkeypatch.setattr(merge, "merge_group", lambda g, d: calls.append(g) or merge.MergeResult(
             ok=True, output_path=Path("/fake/out.mp4"), source_files=["a.mp4", "b.mp4"],
@@ -249,7 +254,7 @@ class TestProcessGroupSelection:
         # and this /api/process call: the requested clip-name set no longer
         # matches any freshly-discovered group.
         current_group = fake_group(["a.mp4", "b.mp4"])
-        monkeypatch.setattr(app, "_discover_and_group", lambda *a, **k: ([current_group], [], []))
+        monkeypatch.setattr(app, "_discover_and_group", lambda *a, **k: ("video", [current_group], [], [], {}))
         calls = []
         monkeypatch.setattr(merge, "merge_group", lambda g, d: calls.append(g))
         result = app.process(app.ProcessRequest(
@@ -263,7 +268,7 @@ class TestProcessGroupSelection:
 
     def test_merge_group_exception_reported_per_group_not_raised(self, tmp_path, monkeypatch):
         group = fake_group(["a.mp4"])
-        monkeypatch.setattr(app, "_discover_and_group", lambda *a, **k: ([group], [], []))
+        monkeypatch.setattr(app, "_discover_and_group", lambda *a, **k: ("video", [group], [], [], {}))
 
         def boom(g, d):
             raise RuntimeError("ffmpeg exploded")
@@ -283,7 +288,7 @@ class TestProcessGroupSelection:
         # silently aliasing a "process" request onto the wrong group.
         group_a = fake_group(["100MEDIA/DJI_0001.MP4"])
         group_b = fake_group(["101MEDIA/DJI_0001.MP4"])
-        monkeypatch.setattr(app, "_discover_and_group", lambda *a, **k: ([group_a, group_b], [], []))
+        monkeypatch.setattr(app, "_discover_and_group", lambda *a, **k: ("video", [group_a, group_b], [], [], {}))
         calls = []
         monkeypatch.setattr(merge, "merge_group", lambda g, d: calls.append(g) or merge.MergeResult(
             ok=True, output_path=Path("/fake/out.mp4"),
@@ -300,7 +305,7 @@ class TestProcessGroupSelection:
     def test_failed_count_reflects_number_of_failures(self, tmp_path, monkeypatch):
         ok_group = fake_group(["a.mp4"])
         fail_group = fake_group(["b.mp4"])
-        monkeypatch.setattr(app, "_discover_and_group", lambda *a, **k: ([ok_group, fail_group], [], []))
+        monkeypatch.setattr(app, "_discover_and_group", lambda *a, **k: ("video", [ok_group, fail_group], [], [], {}))
 
         def fake_merge(g, d):
             name = g.clips[0].mp4_path.name
@@ -313,3 +318,66 @@ class TestProcessGroupSelection:
             source_dir=str(tmp_path), destination_dir=str(tmp_path), gap_threshold_s=300,
         ))
         assert result["failed_count"] == 1
+
+
+class TestDetectSourceKind:
+    def test_only_mp4_is_video(self, tmp_path):
+        (tmp_path / "a.MP4").write_bytes(b"")
+        assert app._detect_source_kind(tmp_path) == "video"
+
+    def test_only_wav_is_audio(self, tmp_path):
+        (tmp_path / "a.wav").write_bytes(b"")
+        assert app._detect_source_kind(tmp_path) == "audio"
+
+    def test_neither_is_empty(self, tmp_path):
+        (tmp_path / "a.txt").write_bytes(b"")
+        assert app._detect_source_kind(tmp_path) == "empty"
+
+    def test_truly_empty_dir_is_empty(self, tmp_path):
+        assert app._detect_source_kind(tmp_path) == "empty"
+
+    def test_both_present_prefers_video(self, tmp_path):
+        # A folder holding both is not a real-world case (a drone card and
+        # an audio recorder's card are never the same folder), but the
+        # priority must still be deterministic rather than depend on
+        # filesystem iteration order.
+        (tmp_path / "a.MP4").write_bytes(b"")
+        (tmp_path / "b.wav").write_bytes(b"")
+        assert app._detect_source_kind(tmp_path) == "video"
+
+    def test_case_insensitive_extensions(self, tmp_path):
+        (tmp_path / "a.wAv").write_bytes(b"")
+        assert app._detect_source_kind(tmp_path) == "audio"
+
+
+class TestAudioProcessDispatch:
+    def test_process_dispatches_to_audio_merge_for_audio_kind(self, tmp_path, monkeypatch):
+        group = fake_audio_group(["a.wav", "b.wav"])
+        monkeypatch.setattr(app, "_discover_and_group",
+                             lambda *a, **k: ("audio", [group], [], [], {"trims": {}}))
+        calls = []
+
+        def fake_merge_audio(g, trims, d):
+            calls.append((g, trims, d))
+            return audio_merge.AudioMergeResult(
+                ok=True, output_path=Path("/fake/out.wav"),
+                source_files=[c.wav_path.name for c in g.clips],
+            )
+        monkeypatch.setattr(audio_merge, "merge_audio_group", fake_merge_audio)
+
+        result = app.process(app.ProcessRequest(
+            source_dir=str(tmp_path), destination_dir=str(tmp_path), gap_threshold_s=300,
+        ))
+        assert len(calls) == 1
+        assert calls[0][0] is group
+        assert calls[0][1] == {}
+        assert result["results"][0]["ok"] is True
+        assert result["results"][0]["source_files"] == ["a.wav", "b.wav"]
+
+    def test_scan_reports_audio_kind_and_device_summary(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(app, "_detect_source_kind", lambda p: "audio")
+        monkeypatch.setattr(audio_merge, "discover_audio_clips", lambda p: ([], []))
+        monkeypatch.setattr(audio_merge, "group_audio_clips", lambda clips: ([], {}, []))
+        result = app.scan(app.ScanRequest(source_dir=str(tmp_path), gap_threshold_s=300))
+        assert result["kind"] == "audio"
+        assert result["groups"] == []
