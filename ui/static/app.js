@@ -8,6 +8,10 @@ const STANDALONE_SCREEN = new URLSearchParams(location.search).get('screen');
 const state = {
   inputDir: "",
   profile: null,
+  burstThreshold: null, // preserved from the /api/run call so /api/write_keywords
+                        // regroups bursts the same way, instead of silently
+                        // falling back to filename-based grouping
+                        // (robo-classifier-20260912-a1f3#03)
   images: [],       // session images
   filteredImages: [], // after grid filter/sort
   currentIndex: 0,   // detail view index into filteredImages
@@ -460,7 +464,13 @@ async function onRun(ev) {
 
   state.inputDir = inputDir;
   state.profile = profile;
+  state.burstThreshold = burst;
   localStorage.setItem("robo.lastInputDir", inputDir);
+  // Persisted per-directory so reopening this session later (a fresh page
+  // load, or tomorrow) restores which model produced its results.csv instead
+  // of silently sending model_name: null on write-keywords
+  // (robo-classifier-20260912-a1f3#16).
+  localStorage.setItem("robo.lastProfile." + inputDir, profile || "");
   document.getElementById("run-btn").disabled = true;
   document.getElementById("progress-box").hidden = false;
   document.getElementById("progress-log").textContent = "";
@@ -615,6 +625,7 @@ async function openSession() {
   const data = await api(`/api/session?input_dir=${encodeURIComponent(state.inputDir)}`);
   state.images = data.images;
   state.inputDir = data.input_dir;
+  state.profile = localStorage.getItem("robo.lastProfile." + state.inputDir) || null;
 
   // If classification has run (results.csv present), land on Thresholds first
   // so the user can tune before committing keywords. The Threshold screen has
@@ -1280,6 +1291,7 @@ async function runWriteKeywords(dryRun) {
       dry_run: dryRun,
       clear_first: document.getElementById("clear-first").checked,
       model_name: state.profile || null,
+      burst_threshold: state.burstThreshold || null,
     };
     const data = await apiPost("/api/write_keywords", body);
     const tiers = Object.entries(data.tier_counts || {})

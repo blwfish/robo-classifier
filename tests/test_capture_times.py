@@ -98,20 +98,47 @@ class TestGetCaptureTimes:
         # Entry present but shutter falls back to 0.0
         assert result[Path("/x/a.jpg")]["shutter"] == 0.0
 
-    def test_exiftool_missing_returns_none(self, monkeypatch):
+    def test_exiftool_missing_returns_empty_dict(self, monkeypatch):
+        # exiftool not found at all: nothing can be extracted, but this must
+        # not be conflated with "some files have no capture time" via a
+        # separate sentinel — an empty dict is the uniform "nothing usable"
+        # result (robo-classifier-20260912-a1f3#07).
         def raise_nf(*a, **kw): raise FileNotFoundError()
         monkeypatch.setattr(classify.subprocess, "run", raise_nf)
-        assert classify.get_capture_times([Path("/x/a.jpg")]) is None
+        assert classify.get_capture_times([Path("/x/a.jpg")]) == {}
 
-    def test_exiftool_nonzero_returns_none(self, monkeypatch):
-        monkeypatch.setattr(classify.subprocess, "run",
-                            _fake_run_factory("", returncode=1))
-        assert classify.get_capture_times([Path("/x/a.jpg")]) is None
+    def test_exiftool_nonzero_on_one_batch_does_not_discard_others(self, monkeypatch):
+        # A batch that fails no longer discards other, already-successful
+        # batches' data — only the failed batch's own files end up missing
+        # from the result (previously this returned None unconditionally,
+        # discarding everything).
+        calls = {"n": 0}
+        good_data = json.dumps([{"SourceFile": "/x/a.jpg", "DateTimeOriginal": "2026:01:01 00:00:00"}])
 
-    def test_malformed_json_returns_none(self, monkeypatch):
+        def fake_run(cmd, **kw):
+            calls["n"] += 1
+            from unittest.mock import MagicMock
+            resp = MagicMock()
+            if calls["n"] == 1:
+                resp.returncode = 1
+                resp.stdout = ""
+            else:
+                resp.returncode = 0
+                resp.stdout = good_data
+            return resp
+
+        monkeypatch.setattr(classify.subprocess, "run", fake_run)
+        paths = [Path(f"/x/{i}.jpg") for i in range(501)]  # forces 2 batches (>500)
+        result = classify.get_capture_times(paths)
+        # Only the second (successful) batch's file made it through — the
+        # first batch's failure didn't wipe it out, and didn't itself
+        # contribute anything either.
+        assert list(result.keys()) == [Path("/x/a.jpg")]
+
+    def test_malformed_json_on_one_batch_does_not_discard_others(self, monkeypatch):
         monkeypatch.setattr(classify.subprocess, "run",
                             _fake_run_factory("not json"))
-        assert classify.get_capture_times([Path("/x/a.jpg")]) is None
+        assert classify.get_capture_times([Path("/x/a.jpg")]) == {}
 
 
 # =============================================================================

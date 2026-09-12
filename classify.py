@@ -237,7 +237,13 @@ def parse_burst_base(filename):
 def get_capture_times(file_paths):
     """
     Extract capture time and shutter speed from image files using exiftool.
-    Returns dict mapping path -> {'timestamp': float, 'shutter': float}
+    Returns dict mapping path -> {'timestamp': float, 'shutter': float}.
+
+    Files are batched to stay under ARG_MAX; if one batch's exiftool call
+    fails or returns unparseable JSON, only that batch's files are treated
+    as having no capture time — earlier/later successful batches are still
+    returned rather than the whole call failing (see
+    robo-classifier-20260912-a1f3#07).
     """
     if not file_paths:
         return {}
@@ -246,20 +252,28 @@ def get_capture_times(file_paths):
     # Chunk to stay under ARG_MAX (~256 KB on macOS; 500 paths × ~60 chars ≈ 30 KB).
     paths_str = [str(p) for p in file_paths]
     data = []
-    try:
-        for start in range(0, len(paths_str), 500):
-            chunk = paths_str[start:start + 500]
+    for start in range(0, len(paths_str), 500):
+        chunk = paths_str[start:start + 500]
+        try:
             result = subprocess.run(
                 ['exiftool', '-json', '-DateTimeOriginal', '-SubSecTimeOriginal',
                  '-ExposureTime', '-CreateDate', '-FileModifyDate'] + chunk,
                 capture_output=True,
                 text=True
             )
-            if result.returncode != 0:
-                return None
+        except FileNotFoundError:
+            print("WARNING: exiftool not found — no capture times will be extracted.")
+            break
+        if result.returncode != 0:
+            print(f"WARNING: exiftool exited with code {result.returncode} for a batch of "
+                  f"{len(chunk)} files; these files will be treated as having no capture time.")
+            continue
+        try:
             data.extend(json.loads(result.stdout))
-    except (subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError):
-        return None
+        except json.JSONDecodeError:
+            print(f"WARNING: could not parse exiftool output for a batch of {len(chunk)} files; "
+                  f"these files will be treated as having no capture time.")
+            continue
 
     capture_times = {}
     for item in data:
@@ -278,9 +292,11 @@ def get_capture_times(file_paths):
                 # Strip timezone offset if present (e.g. "+05:00" or "-07:00")
                 dt_str_clean = re.sub(r'[+-]\d{2}:\d{2}$', '', str(dt_str)).strip()
                 dt = datetime.strptime(dt_str_clean, '%Y:%m:%d %H:%M:%S')
-                # Add subseconds only for DateTimeOriginal/CreateDate fields;
-                # FileModifyDate typically doesn't have a paired SubSec field.
-                if field in ('DateTimeOriginal', 'CreateDate'):
+                # SubSecTimeOriginal pairs specifically with DateTimeOriginal;
+                # exiftool doesn't return a matching subsec field for CreateDate
+                # or FileModifyDate, so applying it to those would misattribute
+                # up to 1s of precision that isn't actually theirs.
+                if field == 'DateTimeOriginal':
                     subsec_str = str(subsec) if subsec else ''
                     if subsec_str:
                         if '.' in subsec_str:
@@ -319,7 +335,7 @@ def get_capture_times(file_paths):
     return capture_times
 
 
-def burst_dedup_by_time(results, capture_times, threshold=0.5):
+def burst_dedup_by_time(results, capture_times, threshold=0.5, filter_select=True):
     """
     Group results into bursts based on capture time proximity.
     Two frames are in the same burst if the gap between them is less than
@@ -329,6 +345,11 @@ def burst_dedup_by_time(results, capture_times, threshold=0.5):
         results: list of result dicts with 'path' keys
         capture_times: dict from get_capture_times()
         threshold: base time threshold in seconds (default 0.5s)
+        filter_select: if True (default), only winners classified 'select'
+            are returned. Pass False to get the best frame per burst
+            regardless of classification (used by review.py's threshold-
+            tuning UI, which defers the select/reject decision to
+            display/write time — robo-classifier-20260912-a1f3#18).
 
     Returns:
         winners: list of winner results (best frame per burst, select only)
@@ -356,10 +377,15 @@ def burst_dedup_by_time(results, capture_times, threshold=0.5):
         if timestamp is None:
             # No EXIF timestamp — assign a singleton burst so this file
             # doesn't accidentally merge with any real-time neighbours.
+            # Deliberately leave prev_timestamp/prev_shutter untouched: the
+            # next real-timestamped frame should still be compared against
+            # whatever came before this gap, not forced into a fresh burst
+            # of its own too (previously this branch reset prev_timestamp
+            # to None, silently splitting an otherwise-contiguous burst
+            # around every missing-timestamp frame — see
+            # robo-classifier-20260912-a1f3#08).
             burst_id += 1
             bursts[burst_id].append(r)
-            burst_id += 1
-            prev_timestamp = None
             continue
 
         if prev_timestamp is None:
@@ -382,11 +408,12 @@ def burst_dedup_by_time(results, capture_times, threshold=0.5):
         prev_timestamp = timestamp
         prev_shutter = shutter
 
-    # Pick best from each burst, only if classified as "select"
+    # Pick best from each burst, only if classified as "select" (unless the
+    # caller opted out via filter_select=False).
     winners = []
     for bid, frames in bursts.items():
         best = max(frames, key=lambda x: x['confidence_select'])
-        if best['classification'] == 'select':
+        if not filter_select or best['classification'] == 'select':
             winners.append(best)
 
     # Convert burst keys to strings for consistency
@@ -395,21 +422,31 @@ def burst_dedup_by_time(results, capture_times, threshold=0.5):
     return winners, bursts_dict
 
 
-def burst_dedup(results, capture_times=None, time_threshold=None):
+def burst_dedup(results, capture_times=None, time_threshold=None, filter_select=True):
     """
     Group results by burst, pick the one with highest confidence_select.
-    Only keeps winners that are classified as "select".
+    Only keeps winners that are classified as "select", unless
+    filter_select=False.
 
     If time_threshold is provided and capture_times available, uses time-based
     grouping. Otherwise falls back to filename-based grouping.
 
+    Args:
+        filter_select: if True (default), only winners classified 'select'
+            are returned. Pass False to get the best frame per burst
+            regardless of classification — used by review.py's threshold-
+            tuning UI, which browses every burst's best frame and defers
+            the select/reject decision to display/write time (this used to
+            be a separate, driftable reimplementation of this function; see
+            robo-classifier-20260912-a1f3#18).
+
     Returns:
-        winners: list of winner results (best frame per burst, select only)
+        winners: list of winner results (best frame per burst)
         bursts: dict mapping burst base to list of all frames in that burst
     """
     # Use time-based grouping if threshold specified and we have capture times
     if time_threshold is not None and time_threshold > 0 and capture_times:
-        return burst_dedup_by_time(results, capture_times, time_threshold)
+        return burst_dedup_by_time(results, capture_times, time_threshold, filter_select=filter_select)
 
     # Fall back to filename-based grouping
     bursts = defaultdict(list)
@@ -417,11 +454,12 @@ def burst_dedup(results, capture_times=None, time_threshold=None):
         base = parse_burst_base(r['filename'])
         bursts[base].append(r)
 
-    # Pick best from each burst, only if classified as "select"
+    # Pick best from each burst, only if classified as "select" (unless the
+    # caller opted out via filter_select=False).
     winners = []
     for base, frames in bursts.items():
         best = max(frames, key=lambda x: x['confidence_select'])
-        if best['classification'] == 'select':
+        if not filter_select or best['classification'] == 'select':
             winners.append(best)
 
     return winners, dict(bursts)
@@ -606,7 +644,7 @@ def clear_robo_keywords(target_path, nef_dir=None, extra_keywords=None):
         return False
 
 
-def write_keywords(winners, bursts, nef_dir=None, clear=True, model_keywords=None):
+def write_keywords(winners, bursts, nef_dir=None, clear=True, model_keywords=None, dry_run=False):
     """
     Write tiered keywords to winner images and 'select' to all burst siblings.
     - Winners >= 0.90 get robo_90 through robo_99 keyword (1% increments)
@@ -626,6 +664,10 @@ def write_keywords(winners, bursts, nef_dir=None, clear=True, model_keywords=Non
                keywords from a prior run survive a re-run that finds nothing new.
         model_keywords: optional dict with keys 'accept_keyword' and/or
                'reject_keyword' from the model's JSON sidecar.
+        dry_run: if True, compute tier_counts and would-be write counts without
+               touching any file (no clear, no keyword writes). This is the
+               single source of truth for "what would happen" previews — see
+               robo-classifier-20260912-a1f3#01/#14.
 
     Returns:
         (tier_counts, winner_written, select_written, reject_written, errors)
@@ -674,20 +716,21 @@ def write_keywords(winners, bursts, nef_dir=None, clear=True, model_keywords=Non
     # otherwise, leaving stale robo_9x tags from prior runs.
     orphan_paths = {p for p in winner_kws if p not in
                     {frame['path'] for bk in qualifying_bursts for frame in bursts[bk]}}
-    if clear and (qualifying_bursts or orphan_paths):
+    if clear and (qualifying_bursts or orphan_paths) and not dry_run:
         to_clear = {frame['path'] for bk in qualifying_bursts for frame in bursts[bk]}
         to_clear |= orphan_paths
         for path in to_clear:
             clear_robo_keywords(path, nef_dir, extra_keywords=extra_clear or None)
 
     # Write robo_9x tier keywords to all qualifying winners (including orphans),
-    # plus the optional flat accept keyword.
+    # plus the optional flat accept keyword. In dry_run mode, count what would
+    # be written without touching any file.
     for path, keyword in winner_kws.items():
-        if write_keyword_to_file(path, keyword, nef_dir):
+        if dry_run or write_keyword_to_file(path, keyword, nef_dir):
             winner_written += 1
         else:
             errors += 1
-        if accept_kw:
+        if accept_kw and not dry_run:
             if not write_keyword_to_file(path, accept_kw, nef_dir):
                 errors += 1
 
@@ -696,12 +739,12 @@ def write_keywords(winners, bursts, nef_dir=None, clear=True, model_keywords=Non
     winner_paths = set(winner_kws.keys())
     for burst_key in qualifying_bursts:
         for frame in bursts[burst_key]:
-            if write_keyword_to_file(frame['path'], 'select', nef_dir):
+            if dry_run or write_keyword_to_file(frame['path'], 'select', nef_dir):
                 select_written += 1
             else:
                 errors += 1
             if reject_kw and frame['path'] not in winner_paths:
-                if write_keyword_to_file(frame['path'], reject_kw, nef_dir):
+                if dry_run or write_keyword_to_file(frame['path'], reject_kw, nef_dir):
                     reject_written += 1
                 else:
                     errors += 1
@@ -722,16 +765,39 @@ def resolve_model(args_model, args_profile):
 
     Resolution order:
       1. --model <explicit path> wins if provided and exists.
-      2. --profile <name> → models/<name>.pt (prints sidecar JSON if present).
+      2. --profile <name> → app_config.model_library/<name>.pt if the user has
+         configured a model library (matching how the UI's /api/profiles and
+         /api/train/start save and list models — robo-classifier-20260912-a1f3#10),
+         else the legacy repo-local models/<name>.pt.
       3. Default model.pt in CWD (legacy).
+
+    Raises RuntimeError (not SystemExit) on an unresolvable profile so callers
+    running this off the main thread (e.g. ui/pipeline_runner.py's background
+    job) can catch it with a normal `except Exception` — see
+    robo-classifier-20260912-a1f3#09.
     """
     if args_profile:
-        pt = MODELS_DIR / f"{args_profile}.pt"
-        if not pt.exists():
-            available = sorted(p.stem for p in MODELS_DIR.glob("*.pt")) if MODELS_DIR.exists() else []
-            raise SystemExit(
-                f"Profile '{args_profile}' not found at {pt}. "
-                f"Available: {available or '(none — put models in models/)'}"
+        from app_config import config
+        search_dirs = []
+        lib = config.model_library
+        if lib:
+            search_dirs.append(lib)
+        search_dirs.append(MODELS_DIR)
+
+        pt = None
+        for d in search_dirs:
+            candidate = d / f"{args_profile}.pt"
+            if candidate.exists():
+                pt = candidate
+                break
+
+        if pt is None:
+            available = sorted(
+                p.stem for d in search_dirs if d.exists() for p in d.glob("*.pt")
+            )
+            raise RuntimeError(
+                f"Profile '{args_profile}' not found in {[str(d) for d in search_dirs]}. "
+                f"Available: {available or '(none)'}"
             )
         sidecar = pt.with_suffix(".json")
         if sidecar.exists():
@@ -967,14 +1033,10 @@ def run_pipeline(
     if burst_threshold is not None and burst_threshold > 0:
         all_paths = [Path(r['path']) for r in classified_results]
         ct = get_capture_times(all_paths)
-        if ct is None:
-            print("WARNING: exiftool failed to extract capture times — "
-                  "falling back to filename-based burst grouping. "
-                  "Check exiftool is installed and the files are readable.")
-            burst_threshold = None
-        elif not ct:
-            print("WARNING: no capture timestamps found in EXIF "
-                  "(all files are missing DateTimeOriginal) — "
+        if not ct:
+            print("WARNING: no usable capture timestamps extracted from EXIF "
+                  "(DateTimeOriginal/CreateDate/FileModifyDate all missing or "
+                  "unparseable, or exiftool failed) — "
                   "falling back to filename-based burst grouping.")
             burst_threshold = None
         else:
@@ -998,28 +1060,10 @@ def run_pipeline(
     if not no_keywords and winners:
         print(f"\n=== Step 4: Writing tiered keywords ===")
         progress_cb({"type": "stage", "stage": "keywords", "message": "Writing keywords"})
-        if dry_run:
-            path_to_burst = {
-                frame['path']: burst_key
-                for burst_key, frames in bursts.items()
-                for frame in frames
-            }
-            qualifying_bursts = set()
-            for w in winners:
-                kw = get_tier_keyword(w['confidence_select'])
-                if kw:
-                    tier_counts[kw] += 1
-                    bk = path_to_burst.get(w['path'])
-                    if bk:
-                        qualifying_bursts.add(bk)
-                else:
-                    tier_counts["below_threshold"] += 1
-            select_count = sum(len(bursts[b]) for b in qualifying_bursts)
-        else:
-            tier_counts, _winner_written, select_written, _reject_written, keyword_write_errors = write_keywords(
-                winners, bursts, nef_dir, model_keywords=model_kws
-            )
-            select_count = select_written
+        tier_counts, _winner_written, select_written, _reject_written, keyword_write_errors = write_keywords(
+            winners, bursts, nef_dir, model_keywords=model_kws, dry_run=dry_run
+        )
+        select_count = select_written
 
     junk_removed = (len(junk_summary.get("junked", [])) if junk_summary else 0)
     input_vs_classified_delta = (
@@ -1268,10 +1312,12 @@ def main():
         print(f"  Below threshold: {tc['below_threshold']}")
         print(f"\nBurst siblings tagged 'select': {summary['select_siblings']}")
 
-    print(f"\nOutput files:")
-    print(f"  {summary['results_csv']}")
-    if summary['winners_csv']:
-        print(f"  {summary['winners_csv']}")
+    if summary['results_csv'] or summary['winners_csv']:
+        print(f"\nOutput files:")
+        if summary['results_csv']:
+            print(f"  {summary['results_csv']}")
+        if summary['winners_csv']:
+            print(f"  {summary['winners_csv']}")
 
     return 0
 

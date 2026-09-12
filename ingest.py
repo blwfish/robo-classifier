@@ -406,6 +406,12 @@ def ingest(
             file_hash = _file_hash(src_path)
             existing = _known_hash(conn, file_hash)
 
+            if existing and not Path(existing).exists():
+                # Manifest says this hash was already ingested, but the
+                # recorded copy is gone (moved/deleted) — treat as unseen
+                # rather than silently and permanently skipping it.
+                existing = None
+
             if existing and not f["force"]:
                 skipped += 1
                 emit({

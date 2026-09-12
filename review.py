@@ -23,7 +23,7 @@ import sys
 import tempfile
 import threading
 import webbrowser
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 try:
@@ -33,7 +33,7 @@ except ImportError:
     sys.exit(1)
 
 try:
-    from PIL import Image as PILImage
+    from PIL import Image as PILImage, ImageOps as PILImageOps
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -41,7 +41,7 @@ except ImportError:
 # Import utilities from classify.py
 sys.path.insert(0, str(Path(__file__).parent))
 try:
-    from classify import write_keywords, parse_burst_base, get_tier_keyword, RAW_EXTENSIONS
+    from classify import write_keywords, get_tier_keyword, RAW_EXTENSIONS
 except ImportError as e:
     print(f"Error importing from classify.py: {e}")
     sys.exit(1)
@@ -90,19 +90,16 @@ def compute_bursts_and_winners(results: list[dict]) -> tuple[list[dict], dict]:
     """
     Group all results by burst (filename-based), find best frame per burst.
     No threshold filter — that happens at display/write time.
+
+    Delegates to classify.burst_dedup(filter_select=False) — this used to be
+    an independent reimplementation of that function's grouping/winner-pick
+    logic, which could silently drift from it with no parity test (see
+    robo-classifier-20260912-a1f3#18).
     """
-    bursts: dict[str, list] = defaultdict(list)
-    for r in results:
-        base = parse_burst_base(r["filename"])
-        bursts[base].append(r)
-
-    winners = []
-    for frames in bursts.values():
-        best = max(frames, key=lambda x: x["confidence_select"])
-        winners.append(best)
-
+    from classify import burst_dedup
+    winners, bursts = burst_dedup(results, filter_select=False)
     winners.sort(key=lambda x: x["confidence_select"], reverse=True)
-    return winners, dict(bursts)
+    return winners, bursts
 
 
 # ─── Workflow Auto-Detection ───────────────────────────────────────────────────
@@ -179,7 +176,12 @@ def _find_small_jpg_dir(jpg_dir: Path, main_stems: set[str]) -> Path | None:
     except PermissionError:
         pass
 
-    best: tuple[int, Path] | None = None
+    # (name_keywords_match, overlap, candidate) — a directory whose name matches
+    # SMALL_DIR_KEYWORDS always outranks one that doesn't, with overlap count as
+    # the tiebreaker. Tracked as separate fields (not encoded into one integer)
+    # so a real overlap count can't collide with the name-match bonus once it
+    # grows large — see robo-classifier-20260912-a1f3#05.
+    best: tuple[bool, int, Path] | None = None
 
     for candidate in search_dirs:
         name_lower = candidate.name.lower()
@@ -202,17 +204,15 @@ def _find_small_jpg_dir(jpg_dir: Path, main_stems: set[str]) -> Path | None:
         if overlap == 0:
             continue
 
-        # Score: overlap count + bonus for matching directory name
-        score = overlap + (1000 if name_keywords_match else 0)
-
-        if best is None or score > best[0]:
-            best = (score, candidate)
+        key = (name_keywords_match, overlap)
+        if best is None or key > (best[0], best[1]):
+            best = (name_keywords_match, overlap, candidate)
 
     # Only accept if at least 10% of main images have a match
-    if best and best[0] > 0:
-        overlap_count = best[0] % 1000 if best[0] >= 1000 else best[0]
+    if best:
+        overlap_count = best[1]
         if overlap_count >= max(1, len(main_stems) * 0.10):
-            return best[1]
+            return best[2]
 
     return None
 
@@ -257,6 +257,7 @@ def preextract_nef_previews(raw_paths: list[Path], thumb_dir: str) -> None:
                 thumb_path = thumb_dir_path / f"{cache_key}.jpg"
                 if HAS_PIL:
                     img = PILImage.open(io.BytesIO(result.stdout)).convert("RGB")
+                    img = PILImageOps.exif_transpose(img)  # honor embedded orientation
                     img.thumbnail((THUMB_W, THUMB_H), PILImage.LANCZOS)
                     img.save(thumb_path, "JPEG", quality=80)
                 else:
@@ -282,11 +283,18 @@ def get_or_create_thumb(file_path: str) -> Path | None:
     thumb_dir = Path(_state["thumb_dir"])
     cache_key = hashlib.md5(file_path.encode()).hexdigest()
     thumb_path = thumb_dir / f"{cache_key}.jpg"
+    source = Path(file_path)
 
     if thumb_path.exists():
-        return thumb_path
-
-    source = Path(file_path)
+        # Invalidate on mtime, matching ui/thumbs.py's cache contract — this
+        # cache used to never expire, so an edited/replaced source file kept
+        # serving its stale thumbnail indefinitely (robo-classifier-20260912-a1f3#13).
+        try:
+            stale = source.exists() and source.stat().st_mtime > thumb_path.stat().st_mtime
+        except OSError:
+            stale = False
+        if not stale:
+            return thumb_path
 
     # ── 1. Check small-JPG index (fast path for Vic's workflow) ──────────────
     small_index: dict[str, Path] = _state.get("small_jpg_index", {})
@@ -306,6 +314,7 @@ def get_or_create_thumb(file_path: str) -> Path | None:
                 return None
             if HAS_PIL:
                 img = PILImage.open(io.BytesIO(result.stdout)).convert("RGB")
+                img = PILImageOps.exif_transpose(img)  # honor embedded orientation
                 img.thumbnail((THUMB_W, THUMB_H), PILImage.LANCZOS)
                 img.save(thumb_path, "JPEG", quality=80)
                 return thumb_path
@@ -326,6 +335,7 @@ def _make_thumb(source: Path, dest: Path) -> Path | None:
     try:
         if HAS_PIL:
             img = PILImage.open(source).convert("RGB")
+            img = PILImageOps.exif_transpose(img)  # honor embedded orientation
             img.thumbnail((THUMB_W, THUMB_H), PILImage.LANCZOS)
             img.save(dest, "JPEG", quality=80)
             return dest
@@ -442,7 +452,7 @@ def api_write_keywords():
 
     try:
         tier_counts, winner_written, select_written, _reject_written, errors = write_keywords(
-            selected, bursts, nef_dir
+            selected, bursts, nef_dir, dry_run=dry_run
         )
         prefix = "(dry run) " if dry_run else ""
         print(f"{prefix}Wrote {winner_written} robo_9x keywords, "
