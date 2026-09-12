@@ -21,6 +21,7 @@ from junk_filter import (
     _companion_xmp,
     _move_with_sidecar,
     detect_junk,
+    filter_directory,
 )
 
 
@@ -489,3 +490,41 @@ class TestDetectJunkMinAreaFracEdgeChopComposition:
         assert result.is_junk is True
         assert len(result.detections) == 1
         assert len(result.usable_detections) == 0
+
+
+# =============================================================================
+# filter_directory — junk_filter.csv max_conf column type consistency
+# (robo-classifier-20260912-a1f3, Phase 2 P2-23)
+# =============================================================================
+
+class TestJunkFilterCsvMaxConf:
+    def test_max_conf_is_numeric_even_with_no_usable_detections(self, tmp_path, monkeypatch):
+        # A frame with zero usable detections used to write '' (empty
+        # string) into the max_conf column, mixing types with frames that
+        # do have a numeric confidence — breaking downstream numeric
+        # parsing of junk_filter.csv. It must now always be a float.
+        monkeypatch.chdir(tmp_path)
+        img_path = _make_test_jpeg(tmp_path / "frame.jpg",
+                                   width=_DETECT_IMG_W, height=_DETECT_IMG_H)
+        # No detections at all -> 'no_vehicle', zero usable_detections.
+        pred = _make_yolo_pred(_DETECT_IMG_W, _DETECT_IMG_H, [])
+        model = _make_yolo_model([[pred]])
+
+        filter_directory(
+            tmp_path,
+            model=model,
+            device='cpu',
+            dry_run=False,
+            write_csv=True,
+            min_area_frac=_MIN_AREA_FRAC,
+        )
+
+        import csv
+        csv_path = tmp_path / "junk_filter.csv"
+        assert csv_path.exists()
+        with open(csv_path, newline="") as f:
+            rows = list(csv.DictReader(f))
+        assert len(rows) == 1
+        # Must parse as a float without raising — the old '' value would
+        # crash a naive float(row['max_conf']) call downstream.
+        assert float(rows[0]["max_conf"]) == 0.0

@@ -40,7 +40,14 @@ def _cache_path(input_dir: Path, source: Path, size: int, suffix: str = ".jpg") 
 def get_thumb(input_dir: Path, source: Path, size: int = THUMB_MAX) -> Path:
     """
     Return path to a cached thumbnail for source, creating it if needed.
-    Raises FileNotFoundError if source doesn't exist.
+    Raises FileNotFoundError if source doesn't exist, or RuntimeError if the
+    image can't be decoded (corrupt file, unsupported format, missing RAW
+    preview) — a single on-demand request failing loudly is preferable to
+    silently caching nothing here, unlike pregenerate_thumbs()'s batch path
+    which intentionally continues past individual failures. Previously the
+    decode step was unguarded, so a corrupt preview raised whatever PIL
+    exception happened to occur instead of a consistent, diagnosable error
+    (robo-classifier-20260912-a1f3, P2-50).
     """
     if not source.exists():
         raise FileNotFoundError(source)
@@ -50,20 +57,27 @@ def get_thumb(input_dir: Path, source: Path, size: int = THUMB_MAX) -> Path:
         return out
 
     ext = source.suffix.lower()
-    if ext in RAW_EXTENSIONS:
-        # Extract embedded preview and downsample
-        with ExiftoolProcess() as et:
-            preview = et.execute('-b', '-PreviewImage', str(source))
-        if not preview:
-            raise RuntimeError(f"No embedded preview in {source}")
-        img = Image.open(io.BytesIO(preview))
-    else:
-        img = Image.open(source)
+    try:
+        if ext in RAW_EXTENSIONS:
+            # Extract embedded preview and downsample
+            with ExiftoolProcess() as et:
+                preview = et.execute('-b', '-PreviewImage', str(source))
+            if not preview:
+                raise RuntimeError(f"No embedded preview in {source}")
+            img = Image.open(io.BytesIO(preview))
+        else:
+            img = Image.open(source)
 
-    img = ImageOps.exif_transpose(img)  # honor orientation tag
-    img.thumbnail((size, size), Image.Resampling.LANCZOS)
-    img = img.convert("RGB")
-    img.save(out, "JPEG", quality=85, optimize=True)
+        img = ImageOps.exif_transpose(img)  # honor orientation tag
+        img.thumbnail((size, size), Image.Resampling.LANCZOS)
+        img = img.convert("RGB")
+        img.save(out, "JPEG", quality=85, optimize=True)
+    except RuntimeError:
+        raise
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not create thumbnail for {source}: {type(e).__name__}: {e}"
+        ) from e
     return out
 
 

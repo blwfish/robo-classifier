@@ -97,21 +97,38 @@ class AppConfig:
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         lines = ["# robo-classifier configuration\n"]
         for k, meta in _FIELDS.items():
-            v = self._data.get(k, "").replace('"', '\\"')
+            v = _escape_toml_string(self._data.get(k, ""))
             lines.append(f"# {meta['label']}\n")
             lines.append(f'{k} = "{v}"\n\n')
         # Preserve any extra keys not in _FIELDS
         for k, v in self._data.items():
             if k not in _FIELDS:
-                escaped = v.replace('"', '\\"')
+                escaped = _escape_toml_string(v)
                 lines.append(f'{k} = "{escaped}"\n')
         CONFIG_PATH.write_text("".join(lines))
 
 
+def _escape_toml_string(v: str) -> str:
+    """
+    Escape backslashes, then quotes, in that order — a value ending in a
+    literal backslash (e.g. a Windows path like "D:\\models\\") must have
+    its backslash escaped first, or the trailing `\"` in the written line
+    is misread as an escaped quote rather than an escaped backslash
+    followed by the real closing quote, corrupting the round-trip and
+    silently dropping the key on next load (see
+    robo-classifier-20260912-a1f3#15). This project has a documented
+    Windows collaborator, making backslash-terminated paths a realistic
+    input, not just a theoretical one.
+    """
+    return v.replace('\\', '\\\\').replace('"', '\\"')
+
+
 def _parse_toml(text: str) -> dict[str, str]:
     """
-    Minimal TOML parser — handles only flat string assignments.
-    Avoids a toml dependency; the config is intentionally simple.
+    Minimal TOML parser — handles only flat string assignments. A stdlib
+    tomllib.loads() isn't used here because tomllib is read-only and this
+    module also needs to write config back out (unlike presets_loader.py,
+    which only reads).
     """
     result: dict[str, str] = {}
     for line in text.splitlines():
@@ -122,7 +139,12 @@ def _parse_toml(text: str) -> dict[str, str]:
         # to the final unescaped closing quote.
         m = re.match(r'^(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"$', line)
         if m:
-            result[m.group(1)] = m.group(2).replace('\\"', '"')
+            # Reverse _escape_toml_string(): any backslash-escaped character
+            # (\\ or \") unescapes to that literal character. A generic
+            # "backslash followed by any one char -> that char" rule is the
+            # correct inverse here because escaping only ever produces
+            # exactly those two two-character sequences.
+            result[m.group(1)] = re.sub(r'\\(.)', r'\1', m.group(2))
     return result
 
 

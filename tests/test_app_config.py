@@ -70,6 +70,13 @@ class TestParseToml:
         result = _parse_toml(r'key = "/Volumes/archive \"2024\""')
         assert result == {"key": '/Volumes/archive "2024"'}
 
+    def test_value_ending_in_escaped_backslash_parses(self):
+        # A Windows path ending in a literal backslash (e.g. "D:\models\")
+        # must parse to that exact string, not be truncated or mis-split at
+        # the "\"" boundary (robo-classifier-20260912-a1f3#15).
+        result = _parse_toml(r'key = "D:\\models\\"')
+        assert result == {"key": "D:\\models\\"}
+
 
 # =============================================================================
 # AppConfig.get / set — round-trip persistence
@@ -121,6 +128,21 @@ class TestGetSet:
 
         cfg2 = AppConfig()
         assert cfg2.get("model_library") == '/Volumes/archive "2024"/models'
+
+    def test_set_value_ending_in_backslash_roundtrip(self, tmp_path, monkeypatch):
+        # A Windows path ending in a literal backslash must survive
+        # set() -> file -> reload. Previous bug: only " was escaped on
+        # write, not \, so the trailing \" in the written line was misread
+        # as an escaped quote and the value was silently dropped on next
+        # load — directly relevant given this repo's documented Windows
+        # collaborator (robo-classifier-20260912-a1f3#15).
+        config_path = tmp_path / "config.toml"
+        monkeypatch.setattr(app_config, "CONFIG_PATH", config_path)
+        cfg = AppConfig()
+        cfg.set("model_library", "D:\\models\\")
+
+        cfg2 = AppConfig()
+        assert cfg2.get("model_library") == "D:\\models\\"
 
 
 # =============================================================================

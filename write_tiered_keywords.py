@@ -33,6 +33,21 @@ from classify import (
 )
 
 
+def _filter_reject_candidates(all_results, winner_paths):
+    """
+    Rows eligible for the reject keyword: not a winner, and confirmed not
+    decode_failed. A row with a missing/absent 'classification' value
+    (hand-edited or foreign CSV) is excluded rather than treated as a safe
+    default — see robo-classifier-20260912-a1f3, P2-54.
+    """
+    return [
+        r for r in all_results
+        if r['path'] not in winner_paths
+        and r.get('classification') is not None
+        and r['classification'] != 'decode_failed'
+    ]
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Write tiered keywords from winners CSV"
@@ -132,11 +147,7 @@ def main():
     if reject_kw and args.results_csv:
         with open(args.results_csv) as f:
             all_results = list(csv.DictReader(f))
-        losers = [
-            r for r in all_results
-            if r['path'] not in winner_paths
-            and r.get('classification') != 'decode_failed'
-        ]
+        losers = _filter_reject_candidates(all_results, winner_paths)
         print(f"\nWriting reject keyword '{reject_kw}' to {len(losers)} non-winners...")
         for i, row in enumerate(losers, 1):
             if args.dry_run:

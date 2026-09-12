@@ -451,7 +451,11 @@ def filter_directory(
                 for r in results:
                     usable = r.usable_detections
                     detection_classes = ','.join(d.cls for d in usable) if usable else ''
-                    max_conf = max((d.conf for d in usable), default='')
+                    # 0.0 (not '') when there are no usable detections, so this
+                    # column is always numeric — a mixed float/empty-string
+                    # column broke downstream numeric parsing of
+                    # junk_filter.csv (robo-classifier-20260912-a1f3, Phase 2 P2-23).
+                    max_conf = max((d.conf for d in usable), default=0.0)
                     writer.writerow([
                         r.path.name,
                         str(r.path),
