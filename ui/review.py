@@ -25,26 +25,44 @@ LABEL_COLORS = {"Red", "Yellow", "Green", "Blue", "Purple", ""}
 # Threshold for treating a roll value as "portrait, skip correction".
 _PORTRAIT_THRESHOLD = 10.0
 
+# Camera bodies this RollAngle heuristic has actually been verified against.
+# The sign convention (assumed to match crs:CropAngle: positive = CCW
+# correction needed) and the ~90°-portrait convention are camera-specific
+# EXIF behaviors, not a documented cross-vendor standard — extend this set
+# only after confirming both against a real file from that body. Applying
+# an unverified convention to an unconfirmed camera would silently
+# mis-rotate every auto-leveled crop from it (see
+# robo-classifier-20260912-a1f3#11).
+_VERIFIED_ROLL_ANGLE_MODELS = {"NIKON Z 9"}
+
 
 def get_roll_angle(source: Path) -> float:
     """
-    Read camera roll angle from EXIF. Returns 0.0 if unavailable or portrait.
+    Read camera roll angle from EXIF. Returns 0.0 if unavailable, portrait,
+    or from a camera model not in _VERIFIED_ROLL_ANGLE_MODELS.
     Portrait shots (RollAngle ≈ ±90°) return 0.0 — handle in LR instead.
-    Sign convention matches crs:CropAngle: positive = CCW correction needed.
+    Sign convention is assumed (not verified) to match crs:CropAngle:
+    positive = CCW correction needed.
     """
     try:
         result = subprocess.run(
-            ['exiftool', '-json', '-RollAngle', str(source)],
+            ['exiftool', '-json', '-RollAngle', '-CameraModelName', str(source)],
             capture_output=True, text=True,
             timeout=10,
         )
         data = json.loads(result.stdout)
-        roll = float(data[0].get('RollAngle', 0) or 0)
+        item = data[0]
+        model = item.get('CameraModelName', '')
+        roll = float(item.get('RollAngle', 0) or 0)
     except subprocess.TimeoutExpired:
         print(f"WARNING: exiftool timed out reading roll angle for {source}")
         return 0.0
     except (json.JSONDecodeError, IndexError, ValueError, TypeError, FileNotFoundError):
         return 0.0
+
+    if model not in _VERIFIED_ROLL_ANGLE_MODELS:
+        return 0.0
+
     if abs(abs(roll) - 90.0) < _PORTRAIT_THRESHOLD:
         return 0.0  # portrait orientation
     return round(roll, 2)
@@ -172,17 +190,38 @@ def read_state(source: Path) -> dict:
         if not data:
             return {'label': None, 'crop': None}
         item = data[0]
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (FileNotFoundError, json.JSONDecodeError, IndexError):
         return {'label': None, 'crop': None}
 
     label = item.get('Label') or None
+    if label is not None and label not in LABEL_COLORS:
+        print(f"WARNING: unrecognized XMP Label {label!r} on {source}; ignoring")
+        label = None
+
+    # HasCrop's exiftool-JSON representation isn't a native JSON bool (we
+    # write it as the literal string "true"); a bare truthy check would
+    # treat the string "false" as crop-present. Normalize explicitly.
+    has_crop = str(item.get('HasCrop', '')).strip().lower() in ('true', '1', 'yes')
+
     crop = None
-    if item.get('HasCrop'):
-        crop = {
-            'left': float(item.get('CropLeft', 0)),
-            'top': float(item.get('CropTop', 0)),
-            'right': float(item.get('CropRight', 1)),
-            'bottom': float(item.get('CropBottom', 1)),
-            'angle': float(item.get('CropAngle', 0)),
-        }
+    if has_crop:
+        try:
+            left = float(item.get('CropLeft', 0))
+            top = float(item.get('CropTop', 0))
+            right = float(item.get('CropRight', 1))
+            bottom = float(item.get('CropBottom', 1))
+            angle = float(item.get('CropAngle', 0))
+        except (ValueError, TypeError):
+            print(f"WARNING: unparseable crop metadata on {source}; ignoring")
+        else:
+            # Re-validate the same invariants set_crop() enforces on write —
+            # a corrupted or foreign-tool-written sidecar shouldn't silently
+            # hand a nonsensical crop rect to the caller.
+            in_range = all(0.0 <= v <= 1.0 for v in (left, top, right, bottom))
+            if in_range and left < right and top < bottom:
+                crop = {'left': left, 'top': top, 'right': right,
+                        'bottom': bottom, 'angle': angle}
+            else:
+                print(f"WARNING: out-of-range/degenerate crop metadata on {source}; ignoring")
+
     return {'label': label, 'crop': crop}

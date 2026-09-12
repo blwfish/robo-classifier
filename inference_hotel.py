@@ -29,7 +29,7 @@ import csv
 from pathlib import Path
 from PIL import Image
 
-from classify import ImageClassifier, ImageDataset
+from classify import ImageClassifier, ImageDataset, write_xmp_sidecar as _classify_write_xmp_sidecar
 
 
 def _classify_single(classifier, image_path):
@@ -86,53 +86,19 @@ def extract_nef_preview(nef_path, temp_jpg=None):
         return None
 
 
-def _keyword_hierarchy(keyword):
-    """HierarchicalSubject value for a keyword — matches classify._keyword_hierarchy."""
-    if keyword.startswith('robo_'):
-        return f"AI keywords|robo|{keyword}"
-    return f"AI keywords|{keyword}"
-
-
-def write_xmp_sidecar(image_path, classification, confidence):
+def write_xmp_sidecar(image_path, classification, confidence=None):
     """
     Write classification keyword to XMP sidecar via exiftool.
 
-    Uses dc:subject / lr:hierarchicalSubject so Lightroom keyword smart
-    collections work. Previously wrote to Iptc4xmpCore:CiKeywords (creator
-    contact field), which Lightroom ignores for keyword indexing.
-
-    The sidecar is placed at <stem>.xmp alongside the image file, not at
-    <filename>.xmp (which was the previous broken behaviour for RAW files).
+    Delegates to classify.write_xmp_sidecar() — the canonical implementation
+    — instead of a hand-duplicated copy. The duplicate had already drifted
+    (flat select/reject tagging only, missing classify.py's tiered-keyword
+    scheme, and a different error-handling style) with nothing to catch
+    further divergence; see robo-classifier-20260912-a1f3#12. `confidence`
+    is accepted for backward compatibility with existing call sites but is
+    not used by the canonical implementation.
     """
-    import subprocess
-    image_path = Path(image_path)
-    xmp_path = image_path.with_suffix('.xmp')
-    hierarchy = _keyword_hierarchy(classification)
-
-    if xmp_path.exists():
-        cmd = [
-            'exiftool', '-overwrite_original',
-            f'-Keywords+={classification}',
-            f'-Subject+={classification}',
-            f'-HierarchicalSubject+={hierarchy}',
-            str(xmp_path),
-        ]
-    else:
-        cmd = [
-            'exiftool',
-            '-tagsfromfile', str(image_path),
-            f'-Keywords+={classification}',
-            f'-Subject+={classification}',
-            f'-HierarchicalSubject+={hierarchy}',
-            '-o', str(xmp_path),
-        ]
-
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        return result.returncode == 0
-    except FileNotFoundError:
-        print("  ERROR: exiftool not found. Install with: brew install exiftool")
-        return False
+    return _classify_write_xmp_sidecar(image_path, classification)
 
 
 def process_directory(classifier, input_dir, output_csv=None, write_xmp=True,

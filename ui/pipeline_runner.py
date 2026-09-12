@@ -8,92 +8,60 @@ frontend can reconnect/resume the event stream.
 
 from __future__ import annotations
 
-import queue
-import sys
-import threading
-import traceback
-import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+
+from ui.job_runner import BaseJob, JobManager
 
 
-@dataclass
-class Job:
-    id: str
+@dataclass(kw_only=True)
+class Job(BaseJob):
     input_dir: Path
     options: dict
-    events: queue.Queue = field(default_factory=queue.Queue)
-    status: str = "pending"  # pending | running | done | error
-    summary: Optional[dict] = None
-    error: Optional[str] = None
-    _thread: Optional[threading.Thread] = None
 
 
-class JobManager:
+def _run(job: Job, emit) -> dict:
+    # Import here so the UI server starts fast (torch import is slow).
+    from classify import run_pipeline
+    from perf import PerfRecorder, measure_input_bytes
+    from image_utils import IMAGE_EXTENSIONS
+
+    options = dict(job.options)
+    options.setdefault("pregen_thumbs", True)
+
+    rec = PerfRecorder(
+        downstream_cb=emit,
+        run_type="pipeline",
+        input_path=str(job.input_dir),
+        preset=options.get("preset", ""),
+        profile=options.get("profile", "") or "",
+    )
+    # Pre-measure input bytes so extract stage can report MB/s.
+    try:
+        nbytes = measure_input_bytes(job.input_dir, IMAGE_EXTENSIONS)
+        rec.set_stage_bytes("extract", nbytes)
+    except Exception:
+        pass
+
+    return run_pipeline(
+        input_dir=job.input_dir,
+        progress_cb=rec.cb,
+        **options,
+    )
+
+
+class _PipelineJobManager:
     def __init__(self):
-        self._jobs: dict[str, Job] = {}
-        self._lock = threading.Lock()
+        self._manager = JobManager(job_cls=Job)
 
     def create(self, input_dir: str, options: dict) -> Job:
-        job = Job(id=uuid.uuid4().hex[:12], input_dir=Path(input_dir), options=options)
-        with self._lock:
-            self._jobs[job.id] = job
-        return job
+        return self._manager.create(input_dir=Path(input_dir), options=options)
 
-    def get(self, job_id: str) -> Optional[Job]:
-        with self._lock:
-            return self._jobs.get(job_id)
+    def get(self, job_id: str):
+        return self._manager.get(job_id)
 
     def start(self, job: Job):
-        def _progress(event):
-            job.events.put(event)
-
-        def _run():
-            job.status = "running"
-            job.events.put({"type": "started"})
-            try:
-                # Import here so the UI server starts fast (torch import is slow).
-                from classify import run_pipeline
-                from perf import PerfRecorder, measure_input_bytes
-                from image_utils import RAW_EXTENSIONS, IMAGE_EXTENSIONS
-
-                options = dict(job.options)
-                options.setdefault("pregen_thumbs", True)
-
-                rec = PerfRecorder(
-                    downstream_cb=_progress,
-                    run_type="pipeline",
-                    input_path=str(job.input_dir),
-                    preset=options.get("preset", ""),
-                    profile=options.get("profile", "") or "",
-                )
-                # Pre-measure input bytes so extract stage can report MB/s.
-                try:
-                    nbytes = measure_input_bytes(job.input_dir, IMAGE_EXTENSIONS)
-                    rec.set_stage_bytes("extract", nbytes)
-                except Exception:
-                    pass
-
-                summary = run_pipeline(
-                    input_dir=job.input_dir,
-                    progress_cb=rec.cb,
-                    **options,
-                )
-                job.summary = summary
-                job.status = "done"
-            except Exception as e:
-                tb = traceback.format_exc()
-                print(tb, file=sys.stderr)
-                job.error = str(e)
-                job.status = "error"
-                job.events.put({"type": "error", "message": str(e)})
-            finally:
-                # Sentinel so SSE consumers can close cleanly.
-                job.events.put({"type": "__end__"})
-
-        job._thread = threading.Thread(target=_run, daemon=True)
-        job._thread.start()
+        self._manager.start(job, _run)
 
 
-MANAGER = JobManager()
+MANAGER = _PipelineJobManager()

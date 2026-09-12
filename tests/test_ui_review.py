@@ -279,13 +279,20 @@ class TestGetRollAngle:
 
     # --- mock-based threshold tests (run on any machine, no archive drive) ---
 
-    def _mock_exiftool(self, monkeypatch, roll_value):
+    def _mock_exiftool(self, monkeypatch, roll_value, camera_model="NIKON Z 9"):
         """Patch subprocess.run to return a synthetic exiftool JSON response."""
         import json
         from unittest.mock import MagicMock
         resp = MagicMock()
-        resp.stdout = json.dumps([{"RollAngle": roll_value}])
+        resp.stdout = json.dumps([{"RollAngle": roll_value, "CameraModelName": camera_model}])
         monkeypatch.setattr(ui_review.subprocess, "run", lambda *a, **kw: resp)
+
+    def test_unverified_camera_model_suppressed_regardless_of_roll(self, tmp_path, monkeypatch):
+        # The RollAngle heuristic is only verified against the Nikon Z9 —
+        # a camera not in _VERIFIED_ROLL_ANGLE_MODELS must always get 0.0,
+        # even for a roll value that would otherwise pass through unchanged.
+        self._mock_exiftool(monkeypatch, 2.5, camera_model="CANON EOS R5")
+        assert get_roll_angle(tmp_path / "x.NEF") == 0.0
 
     def test_landscape_roll_returned_as_is(self, tmp_path, monkeypatch):
         # A normal landscape shot (roll ≈ 2°) must pass through.

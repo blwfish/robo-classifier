@@ -175,7 +175,7 @@ def _extract_one_rawpy(raw_path, temp_dir, max_edge=None):
         import io
         img = Image.open(io.BytesIO(data))
         img = ImageOps.exif_transpose(img)  # rotate to upright
-        if max_edge is not None and max(img.size) > max_edge:
+        if max_edge and max(img.size) > max_edge:
             img.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
         buf = io.BytesIO()
         # Pillow's save() does not copy EXIF by default, so the orientation tag

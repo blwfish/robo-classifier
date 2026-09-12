@@ -7,19 +7,14 @@ same queue so the frontend gets a single SSE stream for the whole job.
 
 from __future__ import annotations
 
-import queue
-import sys
-import threading
-import traceback
-import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+
+from ui.job_runner import BaseJob, JobManager
 
 
-@dataclass
-class TrainJob:
-    id: str
+@dataclass(kw_only=True)
+class TrainJob(BaseJob):
     # Phase 1: prepare
     select_dir: str
     reject_dir: str
@@ -34,80 +29,6 @@ class TrainJob:
     batch_size: int
     accept_keyword: str = ""  # written to XMP alongside robo_9x tier for accepts
     reject_keyword: str = ""  # written to XMP for non-winning burst frames
-
-    events: queue.Queue = field(default_factory=queue.Queue)
-    status: str = "pending"   # pending | preparing | training | done | error
-    summary: Optional[dict] = None
-    error: Optional[str] = None
-    _thread: Optional[threading.Thread] = None
-
-
-class TrainJobManager:
-    def __init__(self):
-        self._jobs: dict[str, TrainJob] = {}
-        self._lock = threading.Lock()
-
-    def create(self, **kwargs) -> TrainJob:
-        job = TrainJob(id=uuid.uuid4().hex[:12], **kwargs)
-        with self._lock:
-            self._jobs[job.id] = job
-        return job
-
-    def get(self, job_id: str) -> Optional[TrainJob]:
-        with self._lock:
-            return self._jobs.get(job_id)
-
-    def start(self, job: TrainJob):
-        def _cb(event):
-            job.events.put(event)
-
-        def _run():
-            job.events.put({"type": "started"})
-            try:
-                # ---- Phase 1: prepare dataset ----
-                job.status = "preparing"
-                job.events.put({"type": "phase", "phase": "prepare",
-                                "message": "Preparing dataset split…"})
-                from prepare_training_data import prepare_dataset
-                prepare_dataset(
-                    select_dir=job.select_dir,
-                    reject_dir=job.reject_dir,
-                    output_dir=job.dataset_dir,
-                    test_size=job.test_size,
-                    progress_cb=_cb,
-                )
-
-                # ---- Phase 2: train ----
-                job.status = "training"
-                job.events.put({"type": "phase", "phase": "train",
-                                "message": f"Training {job.epochs} epochs…"})
-                from train_classifier import train_classifier
-                result = train_classifier(
-                    dataset_dir=job.dataset_dir,
-                    model_output=job.model_output,
-                    epochs=job.epochs,
-                    learning_rate=job.learning_rate,
-                    batch_size=job.batch_size,
-                    progress_cb=_cb,
-                )
-
-                # Write JSON sidecar into model_library alongside the .pt
-                _write_sidecar(job, result["best_acc"])
-
-                job.summary = result
-                job.status = "done"
-
-            except Exception as e:
-                tb = traceback.format_exc()
-                print(tb, file=sys.stderr)
-                job.error = str(e)
-                job.status = "error"
-                job.events.put({"type": "error", "message": str(e)})
-            finally:
-                job.events.put({"type": "__end__"})
-
-        job._thread = threading.Thread(target=_run, daemon=True)
-        job._thread.start()
 
 
 def _write_sidecar(job: TrainJob, best_acc: float):
@@ -133,4 +54,50 @@ def _write_sidecar(job: TrainJob, best_acc: float):
     sidecar.write_text(json.dumps(data, indent=2))
 
 
-MANAGER = TrainJobManager()
+def _run(job: TrainJob, emit) -> dict:
+    # ---- Phase 1: prepare dataset ----
+    job.status = "preparing"
+    emit({"type": "phase", "phase": "prepare", "message": "Preparing dataset split…"})
+    from prepare_training_data import prepare_dataset
+    prepare_dataset(
+        select_dir=job.select_dir,
+        reject_dir=job.reject_dir,
+        output_dir=job.dataset_dir,
+        test_size=job.test_size,
+        progress_cb=emit,
+    )
+
+    # ---- Phase 2: train ----
+    job.status = "training"
+    emit({"type": "phase", "phase": "train", "message": f"Training {job.epochs} epochs…"})
+    from train_classifier import train_classifier
+    result = train_classifier(
+        dataset_dir=job.dataset_dir,
+        model_output=job.model_output,
+        epochs=job.epochs,
+        learning_rate=job.learning_rate,
+        batch_size=job.batch_size,
+        progress_cb=emit,
+    )
+
+    # Write JSON sidecar into model_library alongside the .pt
+    _write_sidecar(job, result["best_acc"])
+
+    return result
+
+
+class _TrainJobManager:
+    def __init__(self):
+        self._manager = JobManager(job_cls=TrainJob)
+
+    def create(self, **kwargs) -> TrainJob:
+        return self._manager.create(**kwargs)
+
+    def get(self, job_id: str):
+        return self._manager.get(job_id)
+
+    def start(self, job: TrainJob):
+        self._manager.start(job, _run)
+
+
+MANAGER = _TrainJobManager()

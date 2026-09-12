@@ -1,87 +1,59 @@
 """
 Threaded ingest job runner for the UI.
 
-Mirrors the pattern of pipeline_runner.py: runs ingest() in a background
-thread and exposes progress events as an SSE-friendly queue.
+Runs ingest() in a background thread and exposes progress events as an
+SSE-friendly queue.
 """
 
 from __future__ import annotations
 
-import queue
-import sys
-import threading
-import traceback
-import uuid
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
+
+from ui.job_runner import BaseJob, JobManager
 
 
-@dataclass
-class IngestJob:
-    id: str
+@dataclass(kw_only=True)
+class IngestJob(BaseJob):
     sources: list[dict]   # [{path, label, force}]
     dest_dir: str
-    events: queue.Queue = field(default_factory=queue.Queue)
-    status: str = "pending"   # pending | running | done | error
-    summary: Optional[dict] = None
-    error: Optional[str] = None
-    _thread: Optional[threading.Thread] = None
 
 
-class IngestJobManager:
+def _run(job: IngestJob, emit):
+    from ingest import ingest as run_ingest
+    from perf import PerfRecorder
+
+    # Use first source path as the input_path for storage classification.
+    input_path = job.sources[0]["path"] if job.sources else job.dest_dir
+
+    rec = PerfRecorder(
+        downstream_cb=emit,
+        run_type="ingest",
+        input_path=input_path,
+        extra={"dest_path": job.dest_dir, "source_count": len(job.sources)},
+    )
+    # ingest() emits its own {"type": "__end__", "summary": ...} event before
+    # returning (documented in its own docstring); JobManager.start()'s emit()
+    # wrapper sets job.summary/job.status from that event atomically, so this
+    # function's return value is never used in practice.
+    run_ingest(
+        sources=job.sources,
+        dest_dir=job.dest_dir,
+        progress_cb=rec.cb,
+    )
+
+
+class _IngestJobManager:
     def __init__(self):
-        self._jobs: dict[str, IngestJob] = {}
-        self._lock = threading.Lock()
+        self._manager = JobManager(job_cls=IngestJob)
 
     def create(self, sources: list[dict], dest_dir: str) -> IngestJob:
-        job = IngestJob(id=uuid.uuid4().hex[:12], sources=sources, dest_dir=dest_dir)
-        with self._lock:
-            self._jobs[job.id] = job
-        return job
+        return self._manager.create(sources=sources, dest_dir=dest_dir)
 
-    def get(self, job_id: str) -> Optional[IngestJob]:
-        with self._lock:
-            return self._jobs.get(job_id)
+    def get(self, job_id: str):
+        return self._manager.get(job_id)
 
     def start(self, job: IngestJob):
-        def _progress(event):
-            job.events.put(event)
-
-        def _run():
-            job.status = "running"
-            job.events.put({"type": "started"})
-            try:
-                from ingest import ingest as run_ingest
-                from perf import PerfRecorder
-
-                # Use first source path as the input_path for storage classification.
-                input_path = job.sources[0]["path"] if job.sources else job.dest_dir
-
-                rec = PerfRecorder(
-                    downstream_cb=_progress,
-                    run_type="ingest",
-                    input_path=input_path,
-                    extra={"dest_path": job.dest_dir, "source_count": len(job.sources)},
-                )
-                summary = run_ingest(
-                    sources=job.sources,
-                    dest_dir=job.dest_dir,
-                    progress_cb=rec.cb,
-                )
-                job.summary = summary
-                job.status = "done"
-            except Exception as e:
-                tb = traceback.format_exc()
-                print(tb, file=sys.stderr)
-                job.error = str(e)
-                job.status = "error"
-                job.events.put({"type": "error", "message": str(e)})
-            finally:
-                # Sentinel so SSE consumers close cleanly.
-                job.events.put({"type": "__end__"})
-
-        job._thread = threading.Thread(target=_run, daemon=True)
-        job._thread.start()
+        self._manager.start(job, _run)
 
 
-MANAGER = IngestJobManager()
+MANAGER = _IngestJobManager()

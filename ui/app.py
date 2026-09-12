@@ -114,12 +114,19 @@ def _load_results_csv(input_dir: Path) -> list[dict]:
 
 
 def _load_winners_csv(input_dir: Path) -> set[str]:
-    """Return set of winner paths (as strings) from winners.csv."""
+    """Return set of winner paths (resolved to absolute strings) from winners.csv.
+
+    winners.csv may have been produced by a CLI run with a relative
+    input_dir, while this UI always compares against a `.resolve()`d path
+    (see _resolve_input_dir); resolving both sides here keeps the
+    membership check working regardless of how the path was originally
+    written — see robo-classifier-20260912-a1f3#06.
+    """
     csv_path = input_dir / "winners.csv"
     if not csv_path.exists():
         return set()
     with open(csv_path) as f:
-        return {row['path'] for row in csv.DictReader(f)}
+        return {str(Path(row['path']).resolve()) for row in csv.DictReader(f)}
 
 
 # -----------------------------------------------------------------------------
@@ -333,7 +340,7 @@ def session(input_dir: str, only_winners: bool = False):
         if ext not in (RAW_EXTENSIONS | JPG_EXTENSIONS):
             continue
         r = by_name.get(f.name, {})
-        is_winner = str(f) in winners
+        is_winner = str(f.resolve()) in winners
         if only_winners and not is_winner:
             continue
 
@@ -460,8 +467,15 @@ def write_keywords_endpoint(req: WriteKeywordsRequest):
     model_kws = {}
     if req.model_name:
         from classify import MODELS_DIR
-        pt = MODELS_DIR / f"{req.model_name}.pt"
-        model_kws = load_model_keywords(pt)
+        pt = None
+        lib = app_config.model_library
+        for d in ([lib] if lib else []) + [MODELS_DIR]:
+            candidate = d / f"{req.model_name}.pt"
+            if candidate.exists():
+                pt = candidate
+                break
+        if pt is not None:
+            model_kws = load_model_keywords(pt)
 
     # Filter decode_failed rows — they must not receive 'select' keywords.
     results = [r for r in results if r.get('classification') != 'decode_failed']
@@ -490,40 +504,18 @@ def write_keywords_endpoint(req: WriteKeywordsRequest):
     if not selected:
         raise HTTPException(400, f"No winners at or above low={req.low:.2f}")
 
-    # Dry run: just compute what WOULD happen.
-    if req.dry_run:
-        path_to_burst = {
-            frame['path']: bk for bk, frames in bursts.items() for frame in frames
-        }
-        qualifying_bursts = set()
-        tier_counts = {f"robo_{i}": 0 for i in range(90, 100)}
-        tier_counts["below_threshold"] = 0
-        for w in selected:
-            kw = get_tier_keyword(w['confidence_select'])
-            if kw:
-                tier_counts[kw] += 1
-                bk = path_to_burst.get(w['path'])
-                if bk:
-                    qualifying_bursts.add(bk)
-            else:
-                tier_counts["below_threshold"] += 1
-        select_count = sum(len(bursts[b]) for b in qualifying_bursts)
-        return {
-            "ok": True,
-            "dry_run": True,
-            "n_tagged": sum(v for k, v in tier_counts.items() if k.startswith("robo_")),
-            "n_select": select_count,
-            "errors": 0,
-            "tier_counts": {k: v for k, v in tier_counts.items() if v > 0},
-        }
-
-    # Real write: write_keywords handles clearing internally (respects clear_first).
+    # write_keywords handles clearing/dry-run internally (respects clear_first
+    # and dry_run) — this endpoint used to reimplement the dry-run preview
+    # calculation independently, which is exactly the drift pattern that let
+    # review.py's dry-run flag go silently inert (see
+    # robo-classifier-20260912-a1f3#01/#14).
     tier_counts, winner_written, select_written, _reject_written, errors = _write_keywords(
         selected, bursts, req.nef_dir, clear=req.clear_first, model_keywords=model_kws,
+        dry_run=req.dry_run,
     )
     return {
         "ok": True,
-        "dry_run": False,
+        "dry_run": req.dry_run,
         "n_tagged": winner_written,
         "n_select": select_written,
         "errors": errors,
