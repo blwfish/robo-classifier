@@ -1,0 +1,13 @@
+[run]
+source = .
+omit =
+    .venv/*
+    dataset/*
+    test-lime-rock/*
+    test-road-atlanta-t3/*
+    _remote_module_non_scriptable
+    */__pycache__/*
+
+[report]
+skip_covered = False
+show_missing = True
